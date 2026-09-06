@@ -1,0 +1,72 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- 安卓 10+ 读取当前 WiFi 名称（SSID）必需定位权限 -->
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <!-- 申请自启动权限（电池优化豁免） -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+    <!-- 安卓 13+ 后台弹通知必需 -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- Shizuku 权限：声明后 Shizuku 应用管理才能识别本应用并授权 -->
+    <uses-permission android:name="moe.shizuku.manager.permission.API_V23" />
+    <!-- 常驻前台服务（后台自动登录） -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+
+    <!-- 覆盖 miuix-blur 的 minSdk 33 要求：安卓 10-12 可安装运行，但玻璃效果需 API 33+ -->
+    <uses-sdk tools:overrideLibrary="top.yukonga.miuix.kmp.blur" />
+
+    <application
+        android:allowBackup="true"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:usesCleartextTraffic="true"
+        android:theme="@style/Theme.SchoolAutologin">
+        <activity android:name=".MainActivity" android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+        <activity android:name=".OobeActivity" android:exported="false" />
+        <activity android:name=".AboutActivity" android:exported="false" android:label="关于" />
+
+        <!-- 常驻前台服务：后台监听 WiFi 变化并自动登录（解决进程被杀收不到广播） -->
+        <service
+            android:name=".AutoLoginService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="campus_network_auto_login" />
+        </service>
+
+        <!-- WiFi 自动登录广播接收器：监听网络/连接状态变化 -->
+        <receiver
+            android:name=".AutoLoginReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.net.wifi.STATE_CHANGE" />
+                <action android:name="android.net.wifi.SUPPLICANT_CONNECTION_CHANGE" />
+            </intent-filter>
+        </receiver>
+        <!-- Shizuku Provider：Shizuku 管理器通过此 Provider 识别本应用 -->
+        <provider
+            android:name="rikka.shizuku.ShizukuProvider"
+            android:authorities="${applicationId}.shizuku"
+            android:multiprocess="false"
+            android:enabled="true"
+            android:exported="true"
+            android:permission="android.permission.INTERACT_ACROSS_USERS_FULL" />
+
+        <!-- Shizuku UserService：由 Shizuku fork 到 shell 权限进程执行系统命令 -->
+        <service
+            android:name=".ShellUserService"
+            android:exported="false" />
+    </application>
+</manifest>

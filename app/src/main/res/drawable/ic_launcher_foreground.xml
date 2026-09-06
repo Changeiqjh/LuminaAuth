@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Wi-Fi 信号图标 -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M54,80 a4,4 0 1,0 0.01,0 Z" />
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M54,68 a9,9 0 0,1 9,9 L45,77 a9,9 0 0,1 9,-9 Z" />
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M54,55 a22,22 0 0,1 22,22 L64,77 a10,10 0 0,0 -20,0 L32,77 a22,22 0 0,1 22,-22 Z" />
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M54,42 a35,35 0 0,1 35,35 L77,77 a23,23 0 0,0 -46,0 L19,77 a35,35 0 0,1 35,-35 Z" />
+</vector>

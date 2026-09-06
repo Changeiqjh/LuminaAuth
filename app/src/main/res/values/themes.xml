@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Compose App：主题仅供系统窗口使用，UI 由 MiuixTheme 绘制 -->
+    <style name="Theme.SchoolAutologin" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">@color/bg_page</item>
+        <item name="android:statusBarColor">@color/bg_page</item>
+        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:colorAccent">@color/accent_blue</item>
+    </style>
+</resources>

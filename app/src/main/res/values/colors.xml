@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- HyperOS 风格色板 -->
+    <color name="bg_page">#F4F5F7</color>
+    <color name="card_white">#FFFFFF</color>
+    <color name="input_bg">#F2F3F5</color>
+    <color name="accent_blue">#1677FF</color>
+    <color name="text_primary">#1F2329</color>
+    <color name="text_secondary">#8F959E</color>
+    <color name="radio_off_bg">#F2F3F5</color>
+    <color name="radio_off_text">#4A4D52</color>
+    <color name="divider">#EBEDF0</color>
+    <color name="ic_launcher_background">#1677FF</color>
+</resources>
