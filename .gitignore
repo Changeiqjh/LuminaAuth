@@ -1,0 +1,21 @@
+# Built files
+build/
+.gradle/
+.kotlin/
+local.properties
+
+# Android / IntelliJ / AS
+*.iml
+.cxx/
+captures/
+.externalNativeBuild/
+local.properties
+.idea/
+
+# Keystore & signing material (never commit)
+*.jks
+*.keystore
+
+# Misc
+.DS_Store
+*.log
