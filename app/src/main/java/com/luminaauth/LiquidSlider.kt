@@ -1,6 +1,9 @@
-// 液态玻璃滑块 — 官方视觉 + 标准拖拽，直接处理拖拽逻辑
+// 液态玻璃滑块 — 原版视觉：
+// 拖动时 snap 让 thumb 实时跟手，速度驱动横向拉伸（Q 弹）；
+// 松手后 release() 把长宽高回弹默认，并按 valueSnap 吸附最终值
 package com.luminaauth
 
+import com.luminaauth.theme.LocalAppColors
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -55,19 +58,26 @@ fun LiquidSlider(
     backdrop: com.kyant.backdrop.Backdrop,
     modifier: Modifier = Modifier,
     onDragStateChange: ((Boolean) -> Unit)? = null,
+    enabled: Boolean = true,
+    // 松手时的值吸附（如等待时间吸附到整数秒）；与当前值不同时带动画回弹
+    valueSnap: (Float) -> Float = { it },
 ) {
     // 跟随应用主题（跟随系统/浅色/深色）：
     // 跟随系统时用系统深浅兜底，浅色/深色时用应用内设置
     val context = LocalContext.current
     val isLightTheme = (ThemeUtils.getIsDark(context) ?: isSystemInDarkTheme()) != true
-    val accentColor = if (isLightTheme) Color(0xFF0088FF) else Color(0xFF0091FF)
-    val trackColor = if (isLightTheme) Color(0xFF787878).copy(0.2f) else Color(0xFF787880).copy(0.36f)
+    val appColors = LocalAppColors.current
+    // 禁用时已填充轨道用轨道灰色
+    val accentColor = appColors.controlAccent
+    val trackColor = appColors.controlTrack.copy(alpha = if (isLightTheme) 0.2f else 0.36f)
     val trackBackdrop = rememberLayerBackdrop()
     BoxWithConstraints(modifier.fillMaxWidth(), contentAlignment = Alignment.CenterStart) {
         val trackWidth = constraints.maxWidth
         val isLtr = LocalLayoutDirection.current == LayoutDirection.Ltr
         val animationScope = rememberCoroutineScope()
         var didDrag by remember { mutableStateOf(false) }
+        // 是否正在拖拽：拖拽中由 snap 直接驱动 value，弹簧回流不干预，避免动画竞争
+        var isDragging by remember { mutableStateOf(false) }
         val damped = remember(animationScope) {
             DampedDragAnimation(
                 animationScope = animationScope,
@@ -83,7 +93,8 @@ fun LiquidSlider(
         }
         LaunchedEffect(damped) {
             snapshotFlow { value() }.collectLatest { v ->
-                if (damped.targetValue != v) damped.updateValue(v)
+                // 拖拽中 thumb 已由 snap 实时驱动，此处跳过；松手后外部改动才走弹簧
+                if (!isDragging && damped.targetValue != v) damped.updateValue(v)
             }
         }
         Box(Modifier.layerBackdrop(trackBackdrop)) {
@@ -91,11 +102,12 @@ fun LiquidSlider(
                 Modifier
                     .clip(Capsule())
                     .background(trackColor)
-                    .pointerInput(animationScope) {
+                    .pointerInput(enabled, trackWidth) {
+                        if (!enabled) return@pointerInput
                         detectTapGestures { position ->
                             val delta = (valueRange.endInclusive - valueRange.start) * (position.x / trackWidth)
                             val targetValue = (if (isLtr) valueRange.start + delta else valueRange.endInclusive - delta)
-                                .coerceIn(valueRange)
+                                .fastCoerceIn(valueRange.start, valueRange.endInclusive)
                             damped.animateToValue(targetValue)
                             onValueChange(targetValue)
                         }
@@ -121,28 +133,42 @@ fun LiquidSlider(
                     translationX = (-size.width / 2f + trackWidth * damped.progress)
                         .fastCoerceIn(-size.width / 4f, trackWidth - size.width * 3f / 4f) * if (isLtr) 1f else -1f
                 }
-                .pointerInput(valueRange, trackWidth) {
+                // key 用稳定值（enabled / trackWidth），绝不把每次重组新建的 valueRange 当 key
+                .pointerInput(enabled, trackWidth) {
+                    if (!enabled) return@pointerInput
                     detectHorizontalDragGestures(
                         onDragStart = {
+                            // touch slop + 水平方向确认后才触发，不会按下即锁死页面
+                            isDragging = true
                             damped.press()
                             onDragStateChange?.invoke(true)
                             didDrag = false
                         },
                         onDragEnd = {
+                            isDragging = false
+                            // 直接取手指最后位置（snap 已让 targetValue = 手指位置），
+                            // 不依赖滞后弹簧 → 不会回原值
+                            val finalValue = damped.targetValue
+                            val snapped = valueSnap(finalValue)
+                            // 位置需要吸附（整数秒）时以弹簧回弹
+                            if (snapped != finalValue) damped.updateValue(snapped)
+                            onValueChange(snapped)
+                            // 松手后尺寸（长宽高）回弹默认
                             damped.release()
                             onDragStateChange?.invoke(false)
-                            if (didDrag) onValueChange(damped.targetValue)
                         },
                         onDragCancel = {
+                            isDragging = false
                             damped.release()
                             onDragStateChange?.invoke(false)
                         }
                     ) { change, dragAmount ->
                         change.consume()
                         didDrag = true
+                        // thumb 实时跟手：每帧直接 snap 到换算后的位置
                         val delta = (valueRange.endInclusive - valueRange.start) * (dragAmount / trackWidth)
                         val newValue = (if (isLtr) damped.value + delta else damped.value - delta)
-                            .coerceIn(valueRange)
+                            .fastCoerceIn(valueRange.start, valueRange.endInclusive)
                         damped.snapToValue(newValue)
                         onValueChange(newValue)
                     }
@@ -177,13 +203,17 @@ fun LiquidSlider(
                         InnerShadow(radius = 4f.dp * progress, alpha = progress)
                     },
                     layerBlock = {
+                        // 按压 / 拖动中放大 + 速度横向拉伸，仅松手后由 release() 回弹默认长宽高
                         scaleX = damped.scaleX
                         scaleY = damped.scaleY
-                        val velocity = damped.velocity / 50f
+                        // 官方同款除数 /10f（原项目 /50f 形变弱 5 倍）
+                        val velocity = damped.velocity / 10f
                         scaleX /= 1f - (velocity * 0.75f).fastCoerceIn(-0.2f, 0.2f)
                         scaleY *= 1f - (velocity * 0.25f).fastCoerceIn(-0.2f, 0.2f)
                     },
-                    onDrawSurface = { drawRect(Color.White.copy(alpha = 1f - damped.pressProgress)) }
+                    onDrawSurface = {
+                        drawRect(Color.White.copy(alpha = 1f - damped.pressProgress))
+                    }
                 )
                 .size(40f.dp, 24f.dp)
         )

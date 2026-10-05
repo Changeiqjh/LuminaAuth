@@ -189,19 +189,8 @@ private fun AboutContent(
         else ColorBlendToken.Pured_Regular_Light
     }
     val logoBlend = remember(isInDark) {
-        if (isInDark) {
-            listOf(
-                BlendColorEntry(Color(0xe6a1a1a1), BlurBlendMode.ColorDodge),
-                BlendColorEntry(Color(0x4de6e6e6), BlurBlendMode.LinearLight),
-                BlendColorEntry(Color(0xff1af500), BlurBlendMode.Lab),
-            )
-        } else {
-            listOf(
-                BlendColorEntry(Color(0xcc4a4a4a), BlurBlendMode.ColorBurn),
-                BlendColorEntry(Color(0xff4f4f4f), BlurBlendMode.LinearLight),
-                BlendColorEntry(Color(0xff1af200), BlurBlendMode.Lab),
-            )
-        }
+        if (isInDark) ColorBlendToken.LogoBlend_Dark
+        else ColorBlendToken.LogoBlend_Light
     }
 
     // Logo parallax/fade tracking

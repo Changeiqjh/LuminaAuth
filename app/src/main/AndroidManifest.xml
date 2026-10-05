@@ -37,9 +37,9 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
-        <activity android:name=".OobeActivity" android:exported="false" />
         <activity android:name=".AboutActivity" android:exported="false" android:label="关于" />
         <activity android:name=".AdvancedSettingsActivity" android:exported="false" android:label="高级设置" />
+        <activity android:name=".theme.ThemeSettingsActivity" android:exported="false" android:label="主题与配色" />
 
         <!-- 常驻前台服务：后台监听 WiFi 变化并自动登录（解决进程被杀收不到广播） -->
         <service

@@ -47,6 +47,7 @@ import com.kyant.backdrop.backdrops.rememberCombinedBackdrop
 import com.kyant.backdrop.backdrops.rememberLayerBackdrop
 import com.luminaauth.DampedDragAnimation
 import com.luminaauth.InteractiveHighlight
+import com.luminaauth.theme.LocalAppColors
 import com.kyant.backdrop.drawBackdrop
 import com.kyant.backdrop.effects.blur
 import com.kyant.backdrop.effects.lens
@@ -76,12 +77,9 @@ fun LiquidBottomTabs(
     // 跟随系统时用系统深浅兜底，浅色/深色时用应用内设置
     val context = LocalContext.current
     val isLightTheme = (ThemeUtils.getIsDark(context) ?: isSystemInDarkTheme()) != true
-    val accentColor =
-        if (isLightTheme) Color(0xFF0088FF)
-        else Color(0xFF0091FF)
-    val containerColor =
-        if (isLightTheme) Color(0xFFFAFAFA).copy(0.4f)
-        else Color(0xFF121212).copy(0.4f)
+    val appColors = LocalAppColors.current
+    val accentColor = appColors.controlAccent
+    val containerColor = appColors.glassContainer.copy(0.4f)
 
     val tabsBackdrop = rememberLayerBackdrop()
 

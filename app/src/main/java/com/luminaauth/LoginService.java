@@ -2,11 +2,16 @@ package com.luminaauth;
 
 import android.content.Context;
 import android.net.wifi.WifiManager;
-import org.json.JSONObject;
+import com.luminaauth.plugin.Outcome;
+import com.luminaauth.plugin.Plugin;
+import com.luminaauth.plugin.PluginManager;
+import com.luminaauth.plugin.PluginRuntime;
+import com.luminaauth.plugin.SessionState;
 import java.net.Inet4Address;
 import java.net.NetworkInterface;
 import java.util.Collections;
-import java.util.Random;
+import java.util.HashMap;
+import java.util.Map;
 
 public class LoginService {
 
@@ -44,57 +49,40 @@ public class LoginService {
     }
 
     public static String checkNetworkStatus(String ip) throws Exception {
-        String url = "http://218.6.130.195:1333/drcom/chkstatus?callback=dr1002&jsVersion=4.X&v=3328&lang=zh";
-        String resp = NetworkUtils.get(url);
-        if (resp.contains("\"result\":1")) return "online";
-        if (resp.contains("\"result\":0")) return "offline";
+        // Plugin-driven status check: the request URL and match rules come
+        // from the active plugin; only the outcome token is mapped back.
+        Plugin plugin = PluginManager.INSTANCE.active(AppContext.get());
+        SessionState state = new SessionState(plugin, new HashMap<>(), null);
+        state.setIp(ip);
+        Outcome outcome = PluginRuntime.INSTANCE.check(state);
+        if (outcome == Outcome.ONLINE) return "online";
+        if (outcome == Outcome.OFFLINE) return "offline";
         return "unreachable";
     }
 
     public static LoginResult doLogin(String username, String password, String isp, String ip) throws Exception {
-        // 从配置读取登录地址（用户可自定义）
-        String url = PrefUtils.getLoginUrl(AppContext.get());
-        // 如果配置地址不包含账号密码，则动态追加（兼容旧格式）
-        if (!url.contains("user_account") && !url.contains("username")) {
-            String account = ",1," + username + "@" + isp;
-            int rand = new Random().nextInt(9000) + 1000;
-            url = url + (url.contains("?") ? "&" : "?") +
-                    "callback=dr1003" +
-                    "&login_method=1" +
-                    "&user_account=" + account +
-                    "&user_password=" + password +
-                    "&wlan_user_ip=" + ip +
-                    "&wlan_user_ipv6=" +
-                    "&wlan_user_mac=000000000000" +
-                    "&wlan_ac_ip=218.89.190.11" +
-                    "&wlan_ac_name=" +
-                    "&jsVersion=4.1.3" +
-                    "&terminal_type=2" +
-                    "&lang=zh-cn" +
-                    "&v=" + rand +
-                    "&lang=zh";
-        }
-        String resp = NetworkUtils.get(url);
-        int start = resp.indexOf('{');
-        int end = resp.lastIndexOf('}');
-        if (start == -1 || end == -1) {
-            return new LoginResult(false, "响应格式错误");
-        }
-        String jsonStr = resp.substring(start, end + 1);
-        JSONObject json = new JSONObject(jsonStr);
-        int result = json.getInt("result");
-        String msg = json.optString("msg", "");
-        if (result == 1) {
+        // Plugin-driven login: the active plugin defines the request template,
+        // success/already-online rules and the failure message path.
+        Plugin plugin = PluginManager.INSTANCE.active(AppContext.get());
+        Map<String, String> inputs = new HashMap<>();
+        inputs.put(Plugin.FIELD_USERNAME, username);
+        inputs.put(Plugin.FIELD_PASSWORD, password);
+        // Accept both a bare suffix ("after") and a historical one ("@after").
+        String suffix = (isp == null) ? null : (isp.startsWith("@") ? isp.substring(1) : isp);
+        SessionState state = new SessionState(plugin, inputs, suffix);
+        state.setIp(ip);
+        state.setLoginUrlOverride(PluginRuntime.INSTANCE.getEffectiveLoginUrl(
+                AppContext.get(), PrefUtils.getLoginUrl(AppContext.get())));
+        Outcome outcome = PluginRuntime.INSTANCE.login(state);
+        if (outcome == Outcome.SUCCESS) {
             return new LoginResult(true, "认证成功");
-        } else if (result == 0) {
-            if (msg.contains("已经在线")) {
-                return new LoginResult(true, "已在线，无需操作");
-            } else {
-                return new LoginResult(false, "登录失败: " + msg);
-            }
-        } else {
-            return new LoginResult(false, "未知响应: " + jsonStr);
         }
+        if (outcome == Outcome.ALREADY_ONLINE) {
+            return new LoginResult(true, "已在线，无需操作");
+        }
+        String detail = (state.getDetail() == null || state.getDetail().isEmpty())
+                ? state.getReason() : state.getDetail();
+        return new LoginResult(false, "登录失败: " + detail);
     }
 
     public static class LoginResult {

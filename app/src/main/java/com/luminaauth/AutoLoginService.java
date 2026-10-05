@@ -3,7 +3,6 @@ package com.luminaauth;
 import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
-import android.app.PendingIntent;
 import android.app.Service;
 import android.content.BroadcastReceiver;
 import android.content.Context;
@@ -87,8 +86,11 @@ public class AutoLoginService extends Service {
     private static final long RETRY_INTERVAL_MS = 5000;
     /** 等待 WiFi 就绪的最长时间（覆盖慢速连接） */
     private static final long WIFI_READY_TIMEOUT_MS = 25000;
-    /** 就绪后的缓冲延迟，等认证链路稳定 */
-    private static final long STABLE_BUFFER_MS = 5000;
+    /**
+     * 就绪后的缓冲延迟，等认证链路稳定：
+     * 由设置页「等待时间」滑块配置（默认 {@link PrefUtils#DEFAULT_WAIT_TIME_MS}），
+     * 通知信号 / 断网重连触发的快速认证会跳过该等待。
+     */
     /** 等待有效 IP 的最长时间 */
     private static final long NETWORK_READY_TIMEOUT_MS = 8000;
 
@@ -219,7 +221,7 @@ public class AutoLoginService extends Service {
                         && nowMs - lastListenerCheckAt > 30000L) {
                     lastListenerCheckAt = nowMs;
                     if (!GatewayNotificationListener.isListenerConnected()) {
-                        LogBuffer.add("通知检测", "增强模式守护：监听未连接，执行 root 重绑");
+                        LogBuffer.add("NTFY", "guard listener=0 act=rebind");
                         GatewayNotificationListener.requestRebind(AutoLoginService.this);
                     }
                 }
@@ -236,11 +238,11 @@ public class AutoLoginService extends Service {
                         pendingSsid = null;
                         if (ssid != null && !ssid.isEmpty() && !"<unknown ssid>".equalsIgnoreCase(ssid)) {
                             AuthGlobalState.INSTANCE.setStatus(AuthStatus.NEED_AUTH);
-                            LogBuffer.add("通知检测", "通知触发认证（ssid=" + ssid + "）");
-                            LogBuffer.addDetail("认证", "通知检测模式：执行自动认证（ssid=" + ssid + "）");
+                            LogBuffer.add("NTFY", "trigger=auth ssid=" + ssid);
+                            LogBuffer.addDetail("AUTH", "start src=notify ssid=" + ssid);
                             performAutoLogin(ssid);
                         } else {
-                            LogBuffer.addDetail("通知检测", "无可用 SSID，跳过本次认证");
+                            LogBuffer.addDetail("NTFY", "skip reason=no_ssid");
                         }
                     }
                     handler.postDelayed(this, computeSlowPollInterval());
@@ -277,26 +279,28 @@ public class AutoLoginService extends Service {
                 // 2. 读取当前 SSID 与状态
                 String ssid = getCurrentSsid();
                 AuthStatus status = AuthGlobalState.INSTANCE.getCurrentStatus();
-                LogBuffer.addDetail("轮询", "wifiOn=" + wifiOn + " ssid=" + (ssid.isEmpty() ? "<空>" : ssid)
-                        + " 状态=" + status + " 目标=" + (wifiOn && !ssid.isEmpty() && !"<unknown ssid>".equalsIgnoreCase(ssid) && isTargetSsid(ssid)));
+                boolean isTarget = wifiOn && !ssid.isEmpty()
+                        && !"<unknown ssid>".equalsIgnoreCase(ssid) && isTargetSsid(ssid);
+                LogBuffer.addDetail("POLL", "wifi=" + (wifiOn ? 1 : 0)
+                        + " ssid=" + (ssid.isEmpty() ? "-" : ssid)
+                        + " s=" + status + " target=" + (isTarget ? 1 : 0));
 
                 if (!wifiOn) {
                     if (status != AuthStatus.NO_WIFI) {
                         AuthGlobalState.INSTANCE.setStatus(AuthStatus.NO_WIFI);
-                        LogBuffer.add("监测", "未连接 WiFi，等待中");
-                        LogBuffer.addDetail("状态", "NO_WIFI：WiFi 断开超过防抖窗口（3s），已切换状态");
+                        LogBuffer.add("MON", "wifi=0 st=wait");
+                        LogBuffer.addDetail("STATE", "->NO_WIFI reason=flap_window");
                     }
                     nextInterval = computeSlowPollInterval();
                 } else if (ssid.isEmpty() || "<unknown ssid>".equalsIgnoreCase(ssid)) {
-                    // SSID 暂时读不到（定位服务未开 / WiFi 切换中）：
-                    // 保持当前状态，短间隔下轮再判，避免误切离网状态
-                    LogBuffer.addDetail("轮询", "SSID 读取为空/" + ssid + "（定位未开或切换中），保持状态=" + status);
+                    // SSID 暂时读不到（定位服务未开 / WiFi 切换中）：保持当前状态，短间隔下轮再判
+                    LogBuffer.addDetail("POLL", "ssid=na keep s=" + status);
                     nextInterval = Math.min(computeSlowPollInterval(), 3000);
                 } else if (!isTargetSsid(ssid)) {
                     if (status != AuthStatus.NOT_CAMPUS) {
                         AuthGlobalState.INSTANCE.setStatus(AuthStatus.NOT_CAMPUS);
-                        LogBuffer.add("监测", "非校园网 WiFi（" + ssid + "），等待中");
-                        LogBuffer.addDetail("状态", "NOT_CAMPUS：SSID=" + ssid + " 不在目标列表");
+                        LogBuffer.add("MON", "target=0 ssid=" + ssid + " st=wait");
+                        LogBuffer.addDetail("STATE", "->NOT_CAMPUS ssid=" + ssid);
                     }
                     nextInterval = computeSlowPollInterval();
                 } else {
@@ -313,15 +317,15 @@ public class AutoLoginService extends Service {
                         lastReauthAt = System.currentTimeMillis();
                         fastAuthRequested = true; // 跳过认证前 5s 稳定缓冲，立即执行
                         AuthGlobalState.INSTANCE.setStatus(AuthStatus.NEED_AUTH);
-                        LogBuffer.add("监测", (reauthBySignal ? "收到通知信号" : "检测到校园网重连")
-                                + "（" + ssid + "），立即校验认证");
-                        LogBuffer.addDetail("状态", "信号触发立即认证：状态 -> NEED_AUTH，执行认证（在线则跳过）");
+                        LogBuffer.add("MON", "reauth trig=" + (reauthBySignal ? "notify" : "reconnect")
+                                + " ssid=" + ssid);
+                        LogBuffer.addDetail("STATE", "->NEED_AUTH reason=signal act=auth");
                         performAutoLogin(ssid);
                     } else if (forceProbeNextRun) {
                         // 其他唤醒（WiFi 广播 / 开机自启）：强制立即会话探测
                         forceProbeNextRun = false;
-                        LogBuffer.add("监测", "收到唤醒信号，立即校验会话");
-                        LogBuffer.addDetail("探测", "唤醒触发：立即会话探测");
+                        LogBuffer.add("MON", "wakeup act=probe");
+                        LogBuffer.addDetail("PROBE", "start src=wakeup");
                         probeSessionAndMaybeReauth(ssid);
                         nextInterval = computeSuccessProbeInterval();
                     } else {
@@ -331,33 +335,32 @@ public class AutoLoginService extends Service {
                                 boolean probed = false;
                                 if (PrefUtils.isEnhancedModeEnabled(AutoLoginService.this)) {
                                     String bssid = getCurrentBssid();
-                                    LogBuffer.addDetail("探测", "增强模式 BSSID 检测：当前=" + bssid
-                                            + " 上次=" + lastBssid);
+                                    LogBuffer.addDetail("PROBE", "bssid now=" + bssid
+                                            + " last=" + lastBssid);
                                     if (bssid != null && !bssid.isEmpty() && !bssid.equals(lastBssid)) {
                                         lastBssid = bssid;
-                                        LogBuffer.add("监测", "检测到接入点变化，重新校验会话");
+                                        LogBuffer.add("MON", "bssid=changed act=probe");
                                         probeSessionAndMaybeReauth(ssid);
                                         probed = true;
                                     }
                                 }
                                 if (!probed) {
-                                    // 定时低频兜底探测（含增强模式 BSSID 未变场景）：
-                                    // 保证断开重连同一 AP、服务重启等情况下仍会周期性校验会话
-                                    LogBuffer.addDetail("探测", "AUTH_SUCCESS：低频会话探测（间隔="
-                                            + computeSuccessProbeInterval() / 1000 + "s）");
+                                    // 定时低频兜底探测（含增强模式 BSSID 未变场景）
+                                    LogBuffer.addDetail("PROBE", "tick s=AUTH_SUCCESS iv="
+                                            + computeSuccessProbeInterval() / 1000);
                                     probeSessionAndMaybeReauth(ssid);
                                 }
                                 nextInterval = computeSuccessProbeInterval();
                                 break;
                             case NEED_AUTH:
                                 // 确实需要认证：执行完整登录流程（内部先探测在线，在线则跳过登录）
-                                LogBuffer.addDetail("认证", "NEED_AUTH：执行自动认证（ssid=" + ssid + "）");
+                                LogBuffer.addDetail("AUTH", "start s=NEED_AUTH ssid=" + ssid);
                                 performAutoLogin(ssid);
                                 break;
                             default:
                                 // NO_WIFI / NOT_CAMPUS -> 刚进入校园网：进入待认证流程
                                 AuthGlobalState.INSTANCE.setStatus(AuthStatus.NEED_AUTH);
-                                LogBuffer.addDetail("状态", "进入校园网（ssid=" + ssid + "），状态 -> NEED_AUTH");
+                                LogBuffer.addDetail("STATE", "->NEED_AUTH reason=enter_campus ssid=" + ssid);
                                 performAutoLogin(ssid);
                                 break;
                         }
@@ -380,20 +383,20 @@ public class AutoLoginService extends Service {
     private void probeSessionAndMaybeReauth(String ssid) {
         String ip = waitForValidIp(NETWORK_READY_TIMEOUT_MS);
         if (ip == null) {
-            LogBuffer.addDetail("探测", "未拿到有效 IP（8s 等待超时），按抖动计数 dirty="
-                    + (AuthGlobalState.INSTANCE.getSessionDirtyCount() + 1));
+            LogBuffer.addDetail("PROBE", "ip=timeout dirty="
+                    + (AuthGlobalState.INSTANCE.getSessionDirtyCount() + 1) + " act=dirty");
             AuthGlobalState.INSTANCE.addDirty();
             maybeReauthFromProbe(ssid);
             return;
         }
         try {
             String s1 = LoginService.checkNetworkStatus(ip);
-            LogBuffer.addDetail("探测", "IP=" + ip + " chkstatus首判=" + s1
-                    + "（fail=" + AuthGlobalState.INSTANCE.getSessionFailCount()
-                    + " dirty=" + AuthGlobalState.INSTANCE.getSessionDirtyCount() + "）");
+            LogBuffer.addDetail("PROBE", "ip=" + ip + " chk=" + s1
+                    + " fail=" + AuthGlobalState.INSTANCE.getSessionFailCount()
+                    + " dirty=" + AuthGlobalState.INSTANCE.getSessionDirtyCount());
             if ("online".equals(s1)) {
                 AuthGlobalState.INSTANCE.resetCounters();
-                LogBuffer.addDetail("探测", "会话有效（online），清空计数");
+                LogBuffer.addDetail("PROBE", "chk=online counters=reset");
                 return;
             }
             if ("offline".equals(s1)) {
@@ -407,11 +410,11 @@ public class AutoLoginService extends Service {
                 } catch (Exception e) {
                     s2 = null;
                 }
-                LogBuffer.addDetail("探测", "首判离线，500ms 后复核=" + s2);
+                LogBuffer.addDetail("PROBE", "chk=offline recheck=" + s2);
                 if ("online".equals(s2)) {
                     // 复核在线：刚才只是瞬时抖动
                     AuthGlobalState.INSTANCE.resetCounters();
-                    LogBuffer.addDetail("探测", "复核在线：瞬时抖动，清空计数，不重认证");
+                    LogBuffer.addDetail("PROBE", "recheck=online transient=1 counters=reset");
                     return;
                 }
                 if ("offline".equals(s2)) {
@@ -423,7 +426,7 @@ public class AutoLoginService extends Service {
                 AuthGlobalState.INSTANCE.addDirty();
             }
         } catch (Exception e) {
-            LogBuffer.addDetail("探测", "chkstatus 异常: " + e.getMessage() + "，按抖动计数");
+            LogBuffer.addDetail("PROBE", "chk_err=" + e.getMessage() + " act=dirty");
             AuthGlobalState.INSTANCE.addDirty();
         }
         maybeReauthFromProbe(ssid);
@@ -431,13 +434,13 @@ public class AutoLoginService extends Service {
 
     /** 探测计数达到阈值才重新认证（performAutoLogin 内部会再判在线，已在线则不提交登录） */
     private void maybeReauthFromProbe(String ssid) {
-        LogBuffer.addDetail("探测", "计数检查 fail=" + AuthGlobalState.INSTANCE.getSessionFailCount()
+        LogBuffer.addDetail("PROBE", "counters fail=" + AuthGlobalState.INSTANCE.getSessionFailCount()
                 + " dirty=" + AuthGlobalState.INSTANCE.getSessionDirtyCount()
-                + " 阈值 fail=" + FAIL_THRESHOLD + " dirty=" + DIRTY_THRESHOLD);
+                + " thr_fail=" + FAIL_THRESHOLD + " thr_dirty=" + DIRTY_THRESHOLD);
         if (AuthGlobalState.INSTANCE.getSessionFailCount() >= FAIL_THRESHOLD
                 || AuthGlobalState.INSTANCE.getSessionDirtyCount() >= DIRTY_THRESHOLD) {
-            LogBuffer.add("认证", "会话疑似失效，重新校验认证");
-            LogBuffer.addDetail("状态", "探测连续失败/抖动达到阈值，状态 -> NEED_AUTH 重新认证");
+            LogBuffer.add("AUTH", "session=stale act=reauth");
+            LogBuffer.addDetail("STATE", "->NEED_AUTH reason=probe_threshold");
             AuthGlobalState.INSTANCE.setStatus(AuthStatus.NEED_AUTH);
             performAutoLogin(ssid);
         }
@@ -451,7 +454,7 @@ public class AutoLoginService extends Service {
         bgThread = new android.os.HandlerThread("autologin-poll");
         bgThread.start();
         handler = new Handler(bgThread.getLooper());
-        LogBuffer.add("服务", "前台服务已启动（后台监测校园网）");
+        LogBuffer.add("SVC", "start");
         startForeground(NOTIFY_ID, buildNotification("校园网自动认证", "后台监听校园网 WiFi，自动完成登录"));
         registerNetworkReceiver();
         // 增强模式开启时，把进程优先级拉到最高（root 写 oom_score_adj / renice）
@@ -463,15 +466,16 @@ public class AutoLoginService extends Service {
             if (savedOrd >= 0 && savedOrd < AuthStatus.values().length
                     && savedTs > 0 && System.currentTimeMillis() - savedTs < STATE_VALID_MS) {
                 AuthGlobalState.INSTANCE.restore(AuthStatus.values()[savedOrd]);
-                LogBuffer.add("服务", "已恢复认证状态: " + AuthGlobalState.INSTANCE.getCurrentStatus());
-                LogBuffer.addDetail("状态", "服务重启恢复状态=" + AuthGlobalState.INSTANCE.getCurrentStatus()
-                        + " 距上次保存=" + (System.currentTimeMillis() - savedTs) / 1000 + "s（阈值" + STATE_VALID_MS / 60000 + "min）");
+                LogBuffer.add("SVC", "state restore=" + AuthGlobalState.INSTANCE.getCurrentStatus());
+                LogBuffer.addDetail("STATE", "restore s=" + AuthGlobalState.INSTANCE.getCurrentStatus()
+                        + " age=" + (System.currentTimeMillis() - savedTs) / 1000
+                        + " ttl=" + STATE_VALID_MS / 60000 + "m");
             } else {
-                LogBuffer.addDetail("状态", "无有效持久化状态（savedOrd=" + savedOrd
-                        + ", savedTs=" + savedTs + "），从 NO_WIFI 冷启动");
+                LogBuffer.addDetail("STATE", "restore=none ord=" + savedOrd
+                        + " ts=" + savedTs + " boot=cold");
             }
         } catch (Exception e) {
-            LogBuffer.addDetail("状态", "状态恢复异常: " + e.getMessage());
+            LogBuffer.addDetail("STATE", "restore_err=" + e.getMessage());
         }
         // 由状态机轮询统一处理首轮检查（含状态恢复后的会话校验）
         handler.post(pollTask);
@@ -481,12 +485,12 @@ public class AutoLoginService extends Service {
         // 通知检测模式开启时不启用：该模式下认证只由系统通知触发，不做 WiFi 主动评估
         if (PrefUtils.isAutoAuthEnabled(this) && !PrefUtils.isNotifyDetectEnabled(this)) {
             forceReauthNextRun = true;
-            LogBuffer.addDetail("服务", "服务启动，已请求立即认证评估（在线则跳过登录）");
+            LogBuffer.addDetail("SVC", "force_reauth=1 reason=start");
         }
         // 通知检测开启但监听服务未连接（被系统杀掉）时，主动请求系统重新绑定
         if (PrefUtils.isNotifyDetectEnabled(this)
                 && !GatewayNotificationListener.isListenerConnected()) {
-            LogBuffer.add("通知检测", "服务启动：通知监听未连接，请求系统重新绑定");
+            LogBuffer.add("NTFY", "svc=start listener=0 act=rebind");
             GatewayNotificationListener.requestRebind(this);
         }
     }
@@ -502,28 +506,27 @@ public class AutoLoginService extends Service {
                 long now = System.currentTimeMillis();
                 // 同一条通知（同 key）3 秒内重复到达 -> 去重跳过
                 if (notifyKey.equals(lastNotifyKey) && now - lastNotifySignalAt < NOTIFY_MIN_GAP_MS) {
-                    LogBuffer.addDetail("通知检测", "重复通知信号，跳过（key=" + notifyKey + "）");
+                    LogBuffer.addDetail("NTFY", "dup=1 key=" + notifyKey + " act=drop");
                     return START_STICKY;
                 }
                 lastNotifyKey = notifyKey;
                 lastNotifySignalAt = now;
                 String notifyText = intent.getStringExtra(GatewayNotificationListener.EXTRA_NOTIFY_TEXT);
-                LogBuffer.add("监测", "收到通知信号，立即校验认证");
-                LogBuffer.addDetail("通知检测", "收到通知信号：key=" + notifyKey + " 文本=" + notifyText);
+                LogBuffer.add("MON", "signal=notify act=check");
+                LogBuffer.addDetail("NTFY", "signal key=" + notifyKey + " text=" + notifyText);
                 if (PrefUtils.isNotifyDetectEnabled(this)) {
-                    // 通知检测模式：从通知内容解析 SSID，必须命中高级设置目标列表才触发认证；
-                    // 不命中 -> 跳过认证也不删通知（等系统下一条"需要认证"的通知弹出再触发）
+                    // 通知检测模式：从通知内容解析 SSID，必须命中高级设置目标列表才触发认证
                     String ssidFromNotify = extractSsidFromNotifyText(notifyText);
                     if (ssidFromNotify == null || ssidFromNotify.isEmpty()) {
-                        LogBuffer.addDetail("通知检测", "通知中未解析到 SSID，跳过认证");
+                        LogBuffer.addDetail("NTFY", "ssid=parse_fail act=skip_auth");
                         return START_STICKY;
                     }
                     if (!isTargetSsid(ssidFromNotify)) {
-                        LogBuffer.add("通知检测", "通知 SSID【" + ssidFromNotify
-                                + "】不在目标列表，跳过认证（不删通知）");
+                        LogBuffer.add("NTFY", "ssid=" + ssidFromNotify
+                                + " target=0 act=skip keep=1");
                         return START_STICKY;
                     }
-                    LogBuffer.add("通知检测", "通知 SSID【" + ssidFromNotify + "】命中目标列表，执行认证");
+                    LogBuffer.add("NTFY", "ssid=" + ssidFromNotify + " target=1 act=auth");
                     notifyKeys.add(notifyKey);
                     pendingSsid = ssidFromNotify;
                     forceReauthNextRun = true;
@@ -564,17 +567,17 @@ public class AutoLoginService extends Service {
                 } else {
                     startService(restart);
                 }
-                LogBuffer.add("服务", "最近任务被划掉，已自动重启前台服务");
+                LogBuffer.add("SVC", "task_removed act=restart");
             }
         } catch (Exception e) {
-            LogBuffer.add("服务", "任务被划掉后重启失败: " + e.getMessage());
+            LogBuffer.add("SVC", "task_removed restart_err=" + e.getMessage());
         }
     }
 
     @Override
     public void onDestroy() {
         instance = null;
-        LogBuffer.add("服务", "前台服务已停止");
+        LogBuffer.add("SVC", "stop");
         try {
             unregisterReceiver(networkReceiver);
         } catch (Exception ignored) {}
@@ -608,13 +611,13 @@ public class AutoLoginService extends Service {
             int pid = android.os.Process.myPid();
             if (RootUtils.isRootAvailable()) {
                 boolean ok = RootUtils.boostProcessPriority();
-                LogBuffer.add("服务", ok
-                        ? "增强模式：进程优先级已拉满（oom_score_adj=-17, nice=-20, pid=" + pid + "）"
-                        : "增强模式：进程优先级提升失败（su 可能未授权）");
+                LogBuffer.add("SVC", ok
+                        ? "boost ok=1 mode=root oom=-17 nice=-20 pid=" + pid
+                        : "boost ok=0 mode=root");
             } else if (ShizukuUtils.isReady()) {
                 // shell 权限提升 own nice 一般会被拒绝，尽力而为
                 ShizukuUtils.exec("renice -n -20 -p " + pid);
-                LogBuffer.add("服务", "增强模式（Shizuku）：已尝试提升进程优先级（shell 权限可能无效）");
+                LogBuffer.add("SVC", "boost mode=shizuku best_effort=1 pid=" + pid);
             }
         } catch (Throwable ignored) {}
     }
@@ -700,7 +703,7 @@ public class AutoLoginService extends Service {
         if (!PrefUtils.isAutoAuthEnabled(this)) return;
         final String[] cfg = PrefUtils.loadConfig(this);
         if (cfg == null) {
-            LogBuffer.addDetail("认证", "未保存账号密码，跳过自动认证");
+            LogBuffer.addDetail("AUTH", "skip reason=no_credentials");
             return;
         }
 
@@ -711,15 +714,15 @@ public class AutoLoginService extends Service {
                 boolean justLeft = lastSeenTarget;
                 lastSeenTarget = false;
                 if (justLeft) {
-                    LogBuffer.add("监测", "已离开校园网，等待中（当前SSID=" + (ssid.isEmpty() ? "未知" : ssid) + "）");
+                    LogBuffer.add("MON", "campus=leave ssid=" + (ssid.isEmpty() ? "na" : ssid));
                 }
             }
-            // 已连上 WiFi 却读不到目标 SSID -> 多半是定位服务未开启，明确提示而不是静默无反应
+            // 已连上 WiFi 却读不到目标 SSID -> 多半是定位服务未开启，更新常驻通知提示
             if (isWifiConnected() && ssid.isEmpty()) {
                 AutoLoginService.updateStatus(this, "校园网自动认证",
                         "已连接 WiFi，但无法读取网络名称，请在系统设置中开启定位服务");
             }
-            LogBuffer.addDetail("认证", "SSID=" + ssid + " 不在目标校园网，不执行认证");
+            LogBuffer.addDetail("AUTH", "skip ssid=" + ssid + " target=0");
             return;
         }
 
@@ -728,15 +731,15 @@ public class AutoLoginService extends Service {
         // - 持续在校园网内则受冷却保护，避免反复认证
         synchronized (LOGIN_LOCK) {
             if (loginInProgress) {
-                LogBuffer.addDetail("认证", "上一次认证仍在进行中（防重入），跳过");
+                LogBuffer.addDetail("AUTH", "skip reason=busy");
                 return;
             }
             long now = System.currentTimeMillis();
             boolean justConnected = !lastSeenTarget;
             lastSeenTarget = true;
             if (!justConnected && now - lastLoginAt < LOGIN_COOLDOWN_MS) {
-                LogBuffer.addDetail("认证", "冷却中跳过（距上次认证 " + (now - lastLoginAt) / 1000 + "s < "
-                        + LOGIN_COOLDOWN_MS / 1000 + "s）");
+                LogBuffer.addDetail("AUTH", "skip reason=cooldown dt=" + (now - lastLoginAt) / 1000
+                        + " cd=" + LOGIN_COOLDOWN_MS / 1000);
                 return;
             }
             loginInProgress = true;
@@ -745,11 +748,13 @@ public class AutoLoginService extends Service {
 
         final String username = cfg[0];
         final String password = cfg[1];
-        final String isp = cfg[2];
+        // 运营商身份底层固定教职工(after)；界面不显示选择，忽略历史配置里的其它值
+        final String isp = "after";
 
-        LogBuffer.add("监测", "检测到校园网 " + ssid + "，开始自动认证流程");
-        LogBuffer.addDetail("认证", "自动认证开始：ssid=" + ssid + " isp=" + isp
-                + " 账号=" + maskAccount(username));
+        LogBuffer.add("MON", "campus=enter ssid=" + ssid + " act=auth");
+        LogBuffer.addDetail("AUTH", "begin ssid=" + ssid
+                + " isp=" + isp
+                + " user=" + maskAccount(username));
         AutoLoginService.updateStatus(this, "校园网自动认证", "检测到 " + ssid + "，正在等待网络就绪...");
 
         new Thread(() -> {
@@ -759,8 +764,8 @@ public class AutoLoginService extends Service {
                 // 第 1 步：等待 WiFi 真正就绪（连上目标网络 + 拿到有效 IP）
                 if (!waitForWifiReady(WIFI_READY_TIMEOUT_MS)) {
                     message = "WiFi 网络尚未就绪，稍后自动重试";
-                    LogBuffer.add("认证", "网络就绪超时，稍后自动重试");
-                    LogBuffer.addDetail("认证", "25s 内未等到目标 SSID + 有效 IP，本次放弃");
+                    LogBuffer.add("AUTH", "wifi_ready=timeout retry=auto");
+                    LogBuffer.addDetail("AUTH", "abort reason=wifi_ready_timeout");
                     AutoLoginService.updateStatus(this, "校园网自动认证", "网络就绪超时，稍后自动重试");
                     notifyResult(false, message);
                     return;
@@ -771,7 +776,7 @@ public class AutoLoginService extends Service {
                 fastAuthRequested = false;
                 if (!skipStableBuffer) {
                     try {
-                        Thread.sleep(STABLE_BUFFER_MS);
+                        Thread.sleep(PrefUtils.getWaitTimeMs(this));
                     } catch (InterruptedException e) {
                         return;
                     }
@@ -787,30 +792,31 @@ public class AutoLoginService extends Service {
                     String ip = waitForValidIp(NETWORK_READY_TIMEOUT_MS);
                     if (ip == null) {
                         message = "IP 未分配，等待重试";
-                        LogBuffer.addDetail("认证", "第" + attempt + "次：未拿到有效 IP");
+                        LogBuffer.addDetail("AUTH", "attempt=" + attempt + " ip=na");
                         continue;
                     }
                     try {
                         String status = LoginService.checkNetworkStatus(ip);
-                        LogBuffer.addDetail("认证", "第" + attempt + "次：IP=" + ip + " chkstatus=" + status);
+                        LogBuffer.addDetail("AUTH", "attempt=" + attempt + " ip=" + ip + " chk=" + status);
                         if ("online".equals(status)) {
                             success = true;
                             message = "已在线，无需操作";
-                            LogBuffer.addDetail("认证", "已在线上，无需提交登录");
+                            LogBuffer.addDetail("AUTH", "already_online submit=0");
                             break;
                         } else if ("offline".equals(status)) {
                             LoginService.LoginResult r = LoginService.doLogin(username, password, isp, ip);
                             success = r.success;
                             message = r.message;
-                            LogBuffer.add("认证", "认证结果(第" + attempt + "次): " + message);
+                            LogBuffer.add("AUTH", "attempt=" + attempt + " login=" + (r.success ? "ok" : "fail"));
+                            LogBuffer.addDetail("AUTH", "attempt=" + attempt + " login=" + (r.success ? "ok" : "fail"));
                             if (success) break;
                         } else {
                             message = "认证服务器暂不可达，等待重试";
                         }
                     } catch (Exception e) {
                         message = "异常: " + e.getMessage();
-                        LogBuffer.add("认证", "认证异常: " + e.getMessage());
-                        LogBuffer.addDetail("认证", "认证异常详情: " + e);
+                        LogBuffer.add("AUTH", "attempt=" + attempt + " err=" + e.getMessage());
+                        LogBuffer.addDetail("AUTH", "attempt=" + attempt + " ex=" + e);
                     }
                 }
 
@@ -818,8 +824,8 @@ public class AutoLoginService extends Service {
                 // 失败 -> NEED_AUTH（下次轮询重试）
                 AuthGlobalState.INSTANCE.setStatus(success
                         ? AuthStatus.AUTH_SUCCESS : AuthStatus.NEED_AUTH);
-                LogBuffer.addDetail("状态", "认证结束 success=" + success + " 状态 -> "
-                        + AuthGlobalState.INSTANCE.getCurrentStatus() + " msg=" + message);
+                LogBuffer.addDetail("STATE", "auth_done ok=" + (success ? 1 : 0)
+                        + " ->" + AuthGlobalState.INSTANCE.getCurrentStatus());
                 // 登录成功后：删除通知检测捕获的校园网相关通知
                 // （如系统"登录到WLAN网络"连接提示），保持通知栏干净、避免重复回调；
                 // 检测逻辑保持正常运行，等待下一条需要认证的通知弹出后再次触发认证
@@ -854,7 +860,7 @@ public class AutoLoginService extends Service {
 
     /** 账号脱敏：保留前 2 位，其余打码，避免详细日志泄露完整账号 */
     private static String maskAccount(String account) {
-        if (account == null || account.isEmpty()) return "<空>";
+        if (account == null || account.isEmpty()) return "na";
         if (account.length() <= 2) return account.charAt(0) + "***";
         return account.substring(0, 2) + "***";
     }
@@ -873,7 +879,7 @@ public class AutoLoginService extends Service {
                     n++;
                 }
                 notifyKeys.clear();
-                LogBuffer.add("通知检测", "登录成功，已清除 " + n + " 条校园网相关通知");
+                LogBuffer.add("NTFY", "auth=ok cleared=" + n);
             }
         }
         // 兜底：扫描通知栏，清理所有残留的"登录到WLAN网络"类连接通知。

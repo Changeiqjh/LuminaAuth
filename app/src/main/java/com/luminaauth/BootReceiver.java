@@ -33,9 +33,9 @@ public class BootReceiver extends BroadcastReceiver {
             } else {
                 context.startService(svc);
             }
-            LogBuffer.add("服务", "开机自启：已拉起自动认证前台服务");
+            LogBuffer.add("SVC", "boot svc=start");
         } catch (Exception e) {
-            LogBuffer.add("服务", "开机自启失败: " + e.getMessage());
+            LogBuffer.add("SVC", "boot svc=start_fail err=" + e.getMessage());
         }
     }
 }

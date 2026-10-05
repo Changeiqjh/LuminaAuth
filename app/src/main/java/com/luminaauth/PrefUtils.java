@@ -2,45 +2,56 @@ package com.luminaauth;
 
 import android.content.Context;
 import android.content.SharedPreferences;
+import com.luminaauth.plugin.PluginManager;
 
 public class PrefUtils {
     private static final String PREF_NAME = "app_prefs";
-    private static final String KEY_OOBE_COMPLETED = "oobe_completed";
     private static final String KEY_AUTO_AUTH = "auto_auth";
     private static final String KEY_POLL_INTERVAL = "poll_interval_ms";
-    private static final String KEY_DOCK_ENABLED = "dock_enabled";
+    private static final String KEY_WAIT_TIME = "wait_time_ms";
     private static final String KEY_ENHANCED_MODE = "enhanced_mode";
     private static final String KEY_SSID_LIST = "ssid_list";
-    private static final String DEFAULT_SSID_LIST = "ChinaNet-JLZG,ChinaNet-JLZG-5G,ChinaNet-JLZG-2.4G,JLZG,JLZG-5G,JLZG-2.4G";
     private static final String KEY_LOGIN_URL = "login_url";
-    private static final String DEFAULT_LOGIN_URL = "http://218.6.130.195:801/eportal/portal/login";
     private static final String KEY_REMEMBER_PWD = "remember_pwd";
+
+    /** 默认目标 SSID 列表由当前活动插件提供（network.ssid）。 */
+    private static String pluginDefaultSsidList(Context context) {
+        return String.join(",", PluginManager.INSTANCE.defaultSsids(context));
+    }
+
+    /** 默认登录地址由当前活动插件的 login 步骤 URL 派生（去掉查询串）。 */
+    private static String pluginDefaultLoginUrl(Context context) {
+        return PluginManager.INSTANCE.defaultLoginUrl(context);
+    }
 
     /** 检测间隔默认值（毫秒）：10 秒 */
     public static final long DEFAULT_POLL_INTERVAL_MS = 10000L;
+
+    /** 网络就绪后、认证前的稳定等待默认值（毫秒）：5 秒 */
+    public static final long DEFAULT_WAIT_TIME_MS = 5000L;
 
     public static long getPollIntervalMs(Context context) {
         return context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
                 .getLong(KEY_POLL_INTERVAL, DEFAULT_POLL_INTERVAL_MS);
     }
 
-    /** 液态玻璃 Dock 开关（默认开启） */
-    public static boolean isDockEnabled(Context context) {
-        return context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
-                .getBoolean(KEY_DOCK_ENABLED, true);
-    }
-
-    public static void setDockEnabled(Context context, boolean enabled) {
-        context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
-                .edit()
-                .putBoolean(KEY_DOCK_ENABLED, enabled)
-                .apply();
-    }
-
     public static void setPollIntervalMs(Context context, long intervalMs) {
         context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
                 .edit()
                 .putLong(KEY_POLL_INTERVAL, intervalMs)
+                .apply();
+    }
+
+    /** 网络就绪后、认证前的稳定等待时间（毫秒） */
+    public static long getWaitTimeMs(Context context) {
+        return context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
+                .getLong(KEY_WAIT_TIME, DEFAULT_WAIT_TIME_MS);
+    }
+
+    public static void setWaitTimeMs(Context context, long waitMs) {
+        context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
+                .edit()
+                .putLong(KEY_WAIT_TIME, waitMs)
                 .apply();
     }
 
@@ -109,10 +120,15 @@ public class PrefUtils {
                 .apply();
     }
 
-    /** 获取目标 SSID 列表（逗号分隔） */
+    /** 获取目标 SSID 列表（逗号分隔）；未自定义时返回活动插件声明的默认列表。 */
     public static String getSsidList(Context context) {
-        return context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
-                .getString(KEY_SSID_LIST, DEFAULT_SSID_LIST);
+        String persisted = context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
+                .getString(KEY_SSID_LIST, null);
+        // A non-blank persisted list is a real customization; blank/empty falls
+        // back to the active plugin's defaults.
+        if (persisted != null && !persisted.trim().isEmpty()) return persisted;
+        String def = pluginDefaultSsidList(context);
+        return def == null ? "" : def;
     }
 
     /** 获取目标 SSID 数组 */
@@ -130,9 +146,10 @@ public class PrefUtils {
                 .apply();
     }
 
-    /** 恢复默认 SSID 列表 */
+    /** 恢复默认 SSID 列表：清除自定义，回到活动插件声明的默认列表。 */
     public static void resetSsidList(Context context) {
-        setSsidList(context, DEFAULT_SSID_LIST);
+        context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
+                .edit().remove(KEY_SSID_LIST).apply();
     }
 
     /** 添加一个 SSID */
@@ -162,16 +179,17 @@ public class PrefUtils {
         setSsidList(context, sb.toString());
     }
 
-    /** 获取登录地址 */
+    /** 获取登录地址；未自定义时返回活动插件派生的默认登录地址。 */
     public static String getLoginUrl(Context context) {
         String url = context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
-                .getString(KEY_LOGIN_URL, DEFAULT_LOGIN_URL);
-        // 自动修复：如果是旧的网页地址（/a79.htm），自动重置为默认登录 API 地址
+                .getString(KEY_LOGIN_URL, null);
+        // 自动修复：旧的网页地址（/a79.htm）回退到插件提供的默认登录 API
         if (url != null && url.contains("/a79.htm")) {
-            setLoginUrl(context, DEFAULT_LOGIN_URL);
-            return DEFAULT_LOGIN_URL;
+            resetLoginUrl(context);
+            return pluginDefaultLoginUrl(context);
         }
-        return url;
+        if (url != null && !url.trim().isEmpty()) return url;
+        return pluginDefaultLoginUrl(context);
     }
 
     /** 保存登录地址 */
@@ -182,29 +200,19 @@ public class PrefUtils {
                 .apply();
     }
 
-    /** 恢复默认登录地址 */
+    /** 恢复默认登录地址：清除自定义，回到活动插件派生的默认地址。 */
     public static void resetLoginUrl(Context context) {
-        setLoginUrl(context, DEFAULT_LOGIN_URL);
-    }
-
-    public static boolean isOobeCompleted(Context context) {
-        return context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
-                .getBoolean(KEY_OOBE_COMPLETED, false);
-    }
-
-    public static void setOobeCompleted(Context context, boolean completed) {
         context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
-                .edit()
-                .putBoolean(KEY_OOBE_COMPLETED, completed)
-                .apply();
+                .edit().remove(KEY_LOGIN_URL).apply();
     }
 
-    public static void saveConfig(Context context, String username, String password, String isp) {
+    public static void saveConfig(Context context, String username, String password, String ispSuffix) {
+        // ispSuffix 为账号后缀：本部署固定使用教职工(after)，UI 已不再提供运营商选择
         context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
                 .edit()
                 .putString("username", username)
                 .putString("password", password)
-                .putString("isp", isp)
+                .putString("isp", ispSuffix == null ? "" : ispSuffix)
                 .apply();
     }
 
@@ -230,6 +238,42 @@ public class PrefUtils {
                 .edit()
                 .putInt(KEY_THEME_MODE, mode)
                 .apply();
+    }
+
+    // ==================== 自定义调色板（ARGB，以 Long 存储） ====================
+
+    /** 调色板 key 统一前缀，便于整体重置与变更监听 */
+    public static final String PALETTE_KEY_PREFIX = "palette_";
+
+    public static android.content.SharedPreferences prefs(Context context) {
+        return context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE);
+    }
+
+    /** 读取某个配色项的 ARGB 值，未自定义时返回默认值 defArgb */
+    public static long getPaletteColor(Context context, String key, long defArgb) {
+        return prefs(context).getLong(key, defArgb);
+    }
+
+    /** 保存某个配色项的 ARGB 值 */
+    public static void setPaletteColor(Context context, String key, long argb) {
+        prefs(context).edit().putLong(key, argb).apply();
+    }
+
+    /** 重置某个配色项（清除自定义，恢复默认） */
+    public static void resetPaletteColor(Context context, String key) {
+        prefs(context).edit().remove(key).apply();
+    }
+
+    /** 一键重置全部自定义配色（清除所有 palette_ 开头的项） */
+    public static void resetAllPaletteColors(Context context) {
+        android.content.SharedPreferences sp = prefs(context);
+        android.content.SharedPreferences.Editor editor = sp.edit();
+        for (String key : sp.getAll().keySet()) {
+            if (key != null && key.startsWith(PALETTE_KEY_PREFIX)) {
+                editor.remove(key);
+            }
+        }
+        editor.apply();
     }
 
     // ==================== 认证状态机持久化 ====================

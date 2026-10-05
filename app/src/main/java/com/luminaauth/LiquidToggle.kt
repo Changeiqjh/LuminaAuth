@@ -1,6 +1,7 @@
 // 液态玻璃开关 — 完全照搬官方 AndroidLiquidGlass 实现，只加 onDragStateChange 锁页
 package com.luminaauth
 
+import com.luminaauth.theme.LocalAppColors
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.isSystemInDarkTheme
@@ -62,9 +63,10 @@ fun LiquidToggle(
     // 跟随系统时用系统深浅兜底，浅色/深色时用应用内设置
     val context = LocalContext.current
     val isLightTheme = (ThemeUtils.getIsDark(context) ?: isSystemInDarkTheme()) != true
-    // 开关开启色：SukiSU 同款 MIUI 蓝，深浅主题统一（不再使用偏暗的深色蓝）
-    val accentColor = Color(0xFF3482FF)
-    val trackColor = if (isLightTheme) Color(0xFF787878).copy(0.2f) else Color(0xFF787880).copy(0.36f)
+    // 开关开启色：取自统一调色板「控件强调色」
+    val appColors = LocalAppColors.current
+    val accentColor = appColors.controlAccent
+    val trackColor = appColors.controlTrack.copy(alpha = if (isLightTheme) 0.2f else 0.36f)
 
     val density = LocalDensity.current
     val isLtr = LocalLayoutDirection.current == LayoutDirection.Ltr

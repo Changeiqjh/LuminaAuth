@@ -3,30 +3,19 @@ package com.luminaauth
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
-import androidx.compose.runtime.remember
 import androidx.compose.runtime.CompositionLocalProvider
 import com.luminaauth.abouteffect.LocalEnableBlur
 import com.luminaauth.about.AboutScreenMiuix
 import com.luminaauth.about.AboutScreenActions
 import com.luminaauth.about.AboutUiState
 import com.luminaauth.about.LinkInfo
-import androidx.compose.ui.graphics.Color
-import top.yukonga.miuix.kmp.theme.ColorSchemeMode
-import top.yukonga.miuix.kmp.theme.MiuixTheme
-import top.yukonga.miuix.kmp.theme.ThemeController
+import com.luminaauth.theme.LuminaAuthTheme
 
 class AboutActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
-            val themeController = remember {
-                ThemeController(
-                    colorSchemeMode = ColorSchemeMode.MonetSystem,
-                    keyColor = Color(0xFF3482FF),
-                    isDark = ThemeUtils.getIsDark(this)
-                )
-            }
-            MiuixTheme(controller = themeController) {
+            LuminaAuthTheme {
                 CompositionLocalProvider(LocalEnableBlur provides true) {
                     val pkgInfo = packageManager.getPackageInfo(packageName, 0)
                     val realVersionCode = pkgInfo.longVersionCode

@@ -1,0 +1,54 @@
+id: drcom-default
+name: DrCOM 默认校园网认证
+version: 1
+description: DrCOM ePortal web auth default plugin
+
+network:
+  ssid:
+    - ChinaNet-JLZG
+    - ChinaNet-JLZG-5G
+    - ChinaNet-JLZG-2.4G
+    - JLZG
+    - JLZG-5G
+    - JLZG-2.4G
+
+sandbox:
+  hosts:
+    - 218.6.130.195:801
+    - 218.6.130.195:1333
+
+fields:
+  - id: username
+    name: 用户名
+    type: text
+    required: true
+  - id: password
+    name: 密码
+    type: password
+    required: true
+
+isps:
+  - id: after
+    name: 教职工
+
+check:
+  method: GET
+  url: "http://218.6.130.195:1333/drcom/chkstatus?callback=dr1002&jsVersion=4.X&v=3328&lang=zh"
+  online_when:
+    contains: '"result":1'
+  offline_when:
+    contains: '"result":0'
+
+login:
+  steps:
+    - name: auth
+      method: GET
+      url: "http://218.6.130.195:801/eportal/portal/login?callback=dr1003&login_method=1&user_account=,1,${username}@${isp}&user_password=${password}&wlan_user_ip=${ip}&wlan_user_ipv6=&wlan_user_mac=000000000000&wlan_ac_ip=218.89.190.11&wlan_ac_name=&jsVersion=4.1.3&terminal_type=2&lang=zh-cn&v=${rand}&lang=zh"
+      success_when:
+        json:
+          path: result
+          equals: "1"
+      already_online_when:
+        contains: "已经在线"
+      fail:
+        json_path: msg

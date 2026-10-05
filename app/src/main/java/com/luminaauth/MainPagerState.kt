@@ -4,8 +4,9 @@
 package com.luminaauth
 
 import androidx.compose.animation.core.Animatable
-import androidx.compose.animation.core.SpringSpec
-import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.AnimationSpec
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.MutatePriority
 import androidx.compose.foundation.pager.PagerState
 import androidx.compose.runtime.Composable
@@ -21,10 +22,10 @@ import kotlinx.coroutines.job
 import kotlinx.coroutines.launch
 import kotlin.math.abs
 
-private val PagerNavigationSpringSpec: SpringSpec<Float> = spring(
-    stiffness = 322.2f,
-    dampingRatio = 32.31f / (2f * kotlin.math.sqrt(322.2f)),
-    visibilityThreshold = 0.5f,
+// ③ 翻页 motionSpec：原先的弹簧在收尾处会来回回弹（抖动），改用 tween 缓动曲线
+private val PagerNavigationSpringSpec: AnimationSpec<Float> = tween(
+    durationMillis = 320,
+    easing = FastOutSlowInEasing,
 )
 
 class MainPagerState(

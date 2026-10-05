@@ -1,0 +1,93 @@
+package com.luminaauth.theme
+
+import android.graphics.Color as AndroidColor
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.unit.dp
+import top.yukonga.miuix.kmp.basic.Button
+import top.yukonga.miuix.kmp.basic.ButtonDefaults
+import top.yukonga.miuix.kmp.basic.ColorPalette
+import top.yukonga.miuix.kmp.basic.Text
+import top.yukonga.miuix.kmp.basic.TextButton
+import top.yukonga.miuix.kmp.basic.TextField
+import top.yukonga.miuix.kmp.window.WindowDialog
+
+/**
+ * 颜色选择对话框：Miuix 调色板 + 十六进制输入。
+ * 移植自 HyperIsland（compose-miuix-ui 实践），适配 miuix-kmp 0.9.3 的 String 重载 TextField。
+ */
+@Composable
+fun AppColorPickerDialog(
+    show: Boolean,
+    title: String,
+    initialColor: Color,
+    onDismiss: () -> Unit,
+    onSave: (Color) -> Unit,
+) {
+    var selectedColor by remember(show, initialColor) { mutableStateOf(initialColor) }
+    var colorCode by remember(show, initialColor) { mutableStateOf(initialColor.toHexColor()) }
+
+    WindowDialog(show = show, title = title, onDismissRequest = onDismiss) {
+        Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+            ColorPalette(
+                color = selectedColor,
+                onColorChanged = { newColor ->
+                    selectedColor = newColor
+                    colorCode = newColor.toHexColor()
+                },
+                modifier = Modifier.fillMaxWidth(),
+            )
+            TextField(
+                value = colorCode,
+                onValueChange = { value ->
+                    colorCode = value
+                    if (HEX_COLOR.matches(value)) {
+                        selectedColor = parseHexColor(value, selectedColor)
+                    }
+                },
+                modifier = Modifier.fillMaxWidth(),
+                label = "颜色代码（#RRGGBB 或 #AARRGGBB）",
+                useLabelAsPlaceholder = true,
+                singleLine = true,
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                TextButton(
+                    text = "取消",
+                    onClick = onDismiss,
+                    modifier = Modifier.weight(1f),
+                )
+                Button(
+                    onClick = { onSave(selectedColor) },
+                    modifier = Modifier.weight(1f),
+                    enabled = HEX_COLOR.matches(colorCode),
+                    colors = ButtonDefaults.buttonColorsPrimary(),
+                ) {
+                    Text("保存")
+                }
+            }
+        }
+    }
+}
+
+internal fun parseHexColor(value: String, fallback: Color): Color = runCatching {
+    if (!HEX_COLOR.matches(value)) return@runCatching fallback
+    Color(AndroidColor.parseColor(value))
+}.getOrDefault(fallback)
+
+internal fun Color.toHexColor(): String = "#%08X".format(toArgb())
+
+// 允许 #RRGGBB 或 #AARRGGBB
+private val HEX_COLOR = Regex("^#(?:[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$")

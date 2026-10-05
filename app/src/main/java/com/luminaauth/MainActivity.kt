@@ -18,7 +18,6 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -33,20 +32,27 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.PagerDefaults
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.Text
 import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
@@ -55,16 +61,28 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.snapshotFlow
+import androidx.compose.runtime.snapshots.SnapshotStateMap
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.blur
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.draw.BlurredEdgeTreatment
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontFamily
@@ -72,11 +90,11 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.util.fastRoundToInt
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import rikka.shizuku.Shizuku
-import android.widget.Toast
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -87,13 +105,16 @@ import top.yukonga.miuix.kmp.basic.Slider
 import top.yukonga.miuix.kmp.basic.Switch
 import top.yukonga.miuix.kmp.basic.TextField
 import top.yukonga.miuix.kmp.blur.layerBackdrop
-import top.yukonga.miuix.kmp.blur.Backdrop
+import top.yukonga.miuix.kmp.blur.isRuntimeShaderSupported
 import top.yukonga.miuix.kmp.blur.rememberLayerBackdrop
 import com.kyant.backdrop.backdrops.rememberCanvasBackdrop
 import top.yukonga.miuix.kmp.shader.isRenderEffectSupported
-import top.yukonga.miuix.kmp.theme.ColorSchemeMode
 import top.yukonga.miuix.kmp.theme.MiuixTheme
-import top.yukonga.miuix.kmp.theme.ThemeController
+import com.luminaauth.theme.LuminaAuthTheme
+import com.luminaauth.theme.LocalAppColors
+import com.luminaauth.ui.components.SegmentedDock
+import com.luminaauth.plugin.Plugin
+import com.luminaauth.plugin.PluginManager
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -107,11 +128,6 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         AppContext.init(this)
         super.onCreate(savedInstanceState)
-        if (!PrefUtils.isOobeCompleted(this)) {
-            startActivity(Intent(this, OobeActivity::class.java))
-            finish()
-            return
-        }
         // 每次启动自动重绑通知监听：
         // 前提 = 通知检测模式已开启 + 已获得通知使用权。
         // 解决国产 ROM 上进程被杀/重启后通知监听 IPC 断开、收不到网关通知的问题。
@@ -123,21 +139,52 @@ class MainActivity : ComponentActivity() {
                 try {
                     GatewayNotificationListener.requestRebind(applicationContext)
                 } catch (e: Exception) {
-                    LogBuffer.addDetail("通知检测", "启动自动重绑异常: " + e.message)
+                    LogBuffer.addDetail("NTFY", "launch rebind_err=" + e.message)
                 }
             }, 1200)
         }
         setContent {
-            val themeController = remember {
-                ThemeController(
-                    colorSchemeMode = ColorSchemeMode.MonetSystem,
-                    keyColor = Color(0xFF3482FF),
-                    isDark = ThemeUtils.getIsDark(this)
-                )
-            }
-            MiuixTheme(controller = themeController) {
+            LuminaAuthTheme {
                 SchoolAutologinApp()
             }
+        }
+        // ④ 解锁高刷新率：关闭系统按需降帧的省电均衡，并把窗口首选刷新率提到屏幕最高档
+        applyHighRefreshRate()
+    }
+
+    /**
+     * ④ 高刷采样：让本页面按屏幕刷新率渲染，而不是被系统按 60Hz 降帧（只碰窗口动画/绘制参数，不动业务逻辑）。
+     * - Android 15+：关闭「省电帧率均衡」+ 触摸时提升帧率（Window 级开关）；
+     * - Android 11+：把窗口首选刷新率/显示模式指向「与当前分辨率相同」的最高刷新率模式；
+     * - Android 15+：再用 View 级 setRequestedFrameRate 把期望帧率告知系统。
+     */
+    private fun applyHighRefreshRate() {
+        try {
+            if (Build.VERSION.SDK_INT >= 35) {
+                // 系统的按需降帧省电策略会把翻页动画锁在 60Hz，这里显式关掉
+                window.setFrameRatePowerSavingsBalanced(false)
+                window.setFrameRateBoostOnTouchEnabled(true)
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                val display = window.decorView.display ?: return
+                val current = display.mode
+                // 只在同分辨率里挑最高刷新率，避免切到低分辨率的高刷模式
+                val best = display.supportedModes
+                    .filter { it.physicalWidth == current.physicalWidth && it.physicalHeight == current.physicalHeight }
+                    .maxByOrNull { it.refreshRate } ?: current
+                if (best.refreshRate > current.refreshRate) {
+                    val attrs = window.attributes
+                    attrs.preferredRefreshRate = best.refreshRate
+                    attrs.preferredDisplayModeId = best.modeId
+                    window.attributes = attrs
+                }
+                if (Build.VERSION.SDK_INT >= 35) {
+                    window.decorView.setRequestedFrameRate(best.refreshRate)
+                }
+                LogBuffer.add("UI", "high_refresh rate=" + best.refreshRate)
+            }
+        } catch (e: Exception) {
+            LogBuffer.addDetail("UI", "high_refresh_err=" + e.message)
         }
     }
 
@@ -153,10 +200,10 @@ class MainActivity : ComponentActivity() {
                 } else {
                     startService(intent)
                 }
-                LogBuffer.add("UI", "打开应用：已自动恢复前台服务")
+                LogBuffer.add("UI", "launch svc=restart")
             }
         } catch (e: Exception) {
-            LogBuffer.add("UI", "恢复服务失败: " + e.message)
+            LogBuffer.add("UI", "launch svc=restart_fail err=" + e.message)
         }
     }
 
@@ -178,6 +225,9 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+// 手动登录防连点：一次只允许一个手动登录在途（跨重组共享）
+private val manualInFlight = java.util.concurrent.atomic.AtomicBoolean(false)
+
 // ==================== 主界面 ====================
 @Composable
 fun SchoolAutologinApp() {
@@ -186,10 +236,10 @@ fun SchoolAutologinApp() {
     val pagerState = rememberPagerState { 3 }
     val mainPagerState = rememberMainPagerState(pagerState)
     val surfaceColor = MiuixTheme.colorScheme.surface
-    // Dock 图标/文字颜色：跟随应用主题（跟随系统时用系统深浅兜底），
-    // 深色玻璃上恒为白色、浅色玻璃上固定深灰，避免任何组合下出现深色图标不可见
-    val dockIsDark = ThemeUtils.getIsDark(context) ?: isSystemInDarkTheme()
-    val dockIconColor = if (dockIsDark) Color.White else Color(0xFF3A3A3A)
+    // Dock 图标/文字颜色：取自统一调色板「玻璃上图标/文字」，深色玻璃为白、浅色玻璃为深灰，
+    // 避免任何组合下出现深色图标不可见
+    val appColors = LocalAppColors.current
+    val dockIconColor = appColors.contentOnGlass
     // 关键：仅在设备支持 RenderEffect（Android 12+ 且 GPU 支持 RuntimeShader）时才启用 blur，
     // 不支持的设备走纯色降级，避免渲染崩溃（SukiSU 同款防护）
     val blurSupported = remember { isRenderEffectSupported() && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S }
@@ -204,9 +254,15 @@ fun SchoolAutologinApp() {
     }
 
     // ---- 应用状态 ----
-    var username by remember { mutableStateOf("") }
-    var password by remember { mutableStateOf("") }
-    var isp by remember { mutableStateOf("after") }
+    // Active plugin drives the login form, ISP options and request flow.
+    val plugin = remember { runCatching { PluginManager.active(context) }.getOrNull() }
+    val fieldValues = remember { mutableStateMapOf<String, String>() }
+    // ISP 选中项：优先插件声明 default: true 的条目，其次第一个
+    var ispIndex by remember(plugin?.id) {
+        mutableIntStateOf(plugin?.isps?.indexOfFirst { it.default }?.takeIf { it != -1 } ?: 0)
+    }
+    // Selected ISP suffix; falls back to the historical fixed identity "after".
+    val isp = plugin?.isps?.getOrNull(ispIndex)?.id ?: "after"
     var rememberPwd by remember { mutableStateOf(false) }
     var autoAuth by remember { mutableStateOf(PrefUtils.isAutoAuthEnabled(context)) }
     var pollSec by remember { mutableFloatStateOf(PrefUtils.getPollIntervalMs(context) / 1000f) }
@@ -220,9 +276,8 @@ fun SchoolAutologinApp() {
         if (rememberPwd) {
             val saved = PrefUtils.loadConfig(context)
             if (saved != null) {
-                username = saved[0]
-                password = saved[1]
-                isp = saved[2]
+                fieldValues[Plugin.FIELD_USERNAME] = saved[0]
+                fieldValues[Plugin.FIELD_PASSWORD] = saved[1]
             }
         }
     }
@@ -235,35 +290,41 @@ fun SchoolAutologinApp() {
     Box(Modifier.fillMaxSize().background(MiuixTheme.colorScheme.background)) {
         HorizontalPager(
             state = pagerState,
+            // ① 预加载前后各一页，翻页时不再现算页面内容，减少切换瞬间的重绘卡顿
+            beyondViewportPageCount = 1,
+            // ③ 翻页 motionSpec：用 tween 缓动曲线替代默认弹簧收尾，去掉回弹抖动
+            flingBehavior = PagerDefaults.flingBehavior(
+                state = pagerState,
+                snapAnimationSpec = tween<Float>(durationMillis = 320, easing = FastOutSlowInEasing),
+            ),
             userScrollEnabled = !isControlDragging,
             modifier = Modifier
                 .fillMaxSize()
                 .then(if (blurSupported) Modifier.layerBackdrop(backdrop) else Modifier)
+                // ② 硬件层级缓存：本层不做裁剪也不需要 renderEffect，省掉每帧的裁剪/重建开销
+                .graphicsLayer {
+                    renderEffect = null
+                    clip = false
+                }
         ) { page ->
             when (page) {
                 0 -> LoginPage(
-                    username = username,
-                    password = password,
-                    isp = isp,
+                    plugin = plugin,
+                    fieldValues = fieldValues,
+                    onFieldChange = { id, v -> fieldValues[id] = v },
+                    ispIndex = ispIndex,
+                    onIspSelect = { ispIndex = it },
                     rememberPwd = rememberPwd,
                     autoAuth = autoAuth,
                     statusText = statusText,
-                    onUsernameChange = { username = it },
-                    onPasswordChange = { password = it },
-                    onIspChange = {
-                        isp = it
-                        if (rememberPwd && username.isNotBlank() && password.isNotBlank()) {
-                            PrefUtils.saveConfig(context, username, password, it)
-                            // 配置变更：需要重新认证
-                            AuthGlobalState.setStatus(AuthStatus.NEED_AUTH)
-                        }
-                    },
                     onRememberChange = {
                         rememberPwd = it
                         PrefUtils.setRememberPwdEnabled(context, it)
                         if (it) {
-                            if (username.isNotBlank() && password.isNotBlank()) {
-                                PrefUtils.saveConfig(context, username, password, isp)
+                            val u = fieldValues[Plugin.FIELD_USERNAME] ?: ""
+                            val p = fieldValues[Plugin.FIELD_PASSWORD] ?: ""
+                            if (u.isNotBlank() && p.isNotBlank()) {
+                                PrefUtils.saveConfig(context, u, p, isp)
                                 // 保存了新凭据：需要重新认证
                                 AuthGlobalState.setStatus(AuthStatus.NEED_AUTH)
                             }
@@ -277,44 +338,69 @@ fun SchoolAutologinApp() {
                         toggleService(context, on)
                     },
                     onLogin = {
-                        if (username.isBlank() || password.isBlank()) {
+                        val u = fieldValues[Plugin.FIELD_USERNAME] ?: ""
+                        val p = fieldValues[Plugin.FIELD_PASSWORD] ?: ""
+                        val missing = if (plugin != null) {
+                            SchemaBuilder.firstMissing(plugin, fieldValues)
+                        } else if (u.isBlank() || p.isBlank()) {
+                            "missing"
+                        } else {
+                            null
+                        }
+                        if (missing != null) {
                             statusText = "请填写完整信息"
+                            LogBuffer.addDetail("AUTH", "manual abort reason=empty_fields")
+                        } else if (!manualInFlight.compareAndSet(false, true)) {
+                            statusText = "上一次登录仍在进行，请稍候"
+                            LogBuffer.addDetail("AUTH", "manual abort reason=busy")
                         } else {
                             if (rememberPwd) {
-                                PrefUtils.saveConfig(context, username, password, isp)
+                                PrefUtils.saveConfig(context, u, p, isp)
                             }
                             statusText = "正在登录..."
                             // 手动登录：用户主动操作优先级最高，强制进入待认证状态
                             AuthGlobalState.setStatus(AuthStatus.NEED_AUTH)
+                            LogBuffer.addDetail("AUTH", "manual begin")
                             Thread {
                                 try {
                                     val ip = LoginService.getLocalIPv4(context)
                                     if (ip == null) {
                                         statusText = "无法获取本机 IP，请连接 Wi-Fi"
+                                        LogBuffer.addDetail("AUTH", "manual ip=na")
                                     } else {
                                         val status = LoginService.checkNetworkStatus(ip)
+                                        LogBuffer.addDetail("AUTH", "manual ip=$ip chk=$status")
                                         if ("online" == status) {
                                             statusText = "已在线，无需登录"
                                             AuthGlobalState.setStatus(AuthStatus.AUTH_SUCCESS)
+                                            LogBuffer.addDetail("AUTH", "manual already_online submit=0")
+                                            LogBuffer.add("AUTH", "manual login=skip reason=online")
                                         } else if ("offline" == status) {
-                                            val r = LoginService.doLogin(username, password, isp, ip)
+                                            val r = LoginService.doLogin(u, p, isp, ip)
                                             statusText = if (r.success) "登录成功" else "登录失败: " + r.message
                                             AuthGlobalState.setStatus(
                                                 if (r.success) AuthStatus.AUTH_SUCCESS else AuthStatus.NEED_AUTH
                                             )
+                                            val result = if (r.success) "ok" else "fail"
+                                            LogBuffer.addDetail("AUTH", "manual login=$result")
+                                            LogBuffer.add("AUTH", "manual login=$result")
                                         } else {
                                             statusText = "网络不可达"
+                                            LogBuffer.addDetail("AUTH", "manual chk=unreachable")
                                         }
                                     }
                                 } catch (e: Exception) {
                                     statusText = "异常: " + e.message
+                                    LogBuffer.addDetail("AUTH", "manual err=" + e.message)
+                                } finally {
+                                    manualInFlight.set(false)
                                 }
                             }.start()
                         }
                     },
                     onControlDrag = { isControlDragging = it }
                 )
-                1 -> LogPage(logVersion)
+                1 -> LogPage(logVersion, blurEnabled = blurSupported && isRuntimeShaderSupported())
                 2 -> SettingsPage(
                     autoAuth = autoAuth,
                     pollSec = pollSec,
@@ -328,7 +414,10 @@ fun SchoolAutologinApp() {
                         PrefUtils.setAutoAuthEnabled(context, on)
                         toggleService(context, on)
                     },
-                    onControlDrag = { isControlDragging = it }
+                    onControlDrag = { isControlDragging = it },
+                    // 顶部渐进模糊依赖 RuntimeShader（API33+），与 HyperIsland 同一 gate；
+                    // Android 12 等不支持的设备走纯色栏，避免着色器崩溃
+                    blurEnabled = blurSupported && isRuntimeShaderSupported(),
                 )
             }
         }
@@ -382,25 +471,24 @@ private fun toggleService(context: Context, on: Boolean) {
         } else {
             context.startService(intent)
         }
-        LogBuffer.add("UI", "自动认证已开启")
+        LogBuffer.add("UI", "autoauth=on")
     } else {
         context.stopService(intent)
-        LogBuffer.add("UI", "自动认证已关闭")
+        LogBuffer.add("UI", "autoauth=off")
     }
 }
 
 // ==================== 主页（登录） ====================
 @Composable
 private fun LoginPage(
-    username: String,
-    password: String,
-    isp: String,
+    plugin: Plugin?,
+    fieldValues: SnapshotStateMap<String, String>,
+    onFieldChange: (id: String, value: String) -> Unit,
+    ispIndex: Int,
+    onIspSelect: (Int) -> Unit,
     rememberPwd: Boolean,
     autoAuth: Boolean,
     statusText: String,
-    onUsernameChange: (String) -> Unit,
-    onPasswordChange: (String) -> Unit,
-    onIspChange: (String) -> Unit,
     onRememberChange: (Boolean) -> Unit,
     onAutoAuthChange: (Boolean) -> Unit,
     onLogin: () -> Unit,
@@ -433,37 +521,51 @@ private fun LoginPage(
             color = secondary
         )
         Spacer(Modifier.height(24.dp))
-        // 用户名（miuix 下划线输入框）
-        TextField(
-            value = username,
-            onValueChange = onUsernameChange,
-            modifier = Modifier.fillMaxWidth(),
-            label = "用户名",
-        )
-        Spacer(Modifier.height(8.dp))
-        // 密码
-        TextField(
-            value = password,
-            onValueChange = onPasswordChange,
-            modifier = Modifier.fillMaxWidth(),
-            label = "密码",
-        )
-        Spacer(Modifier.height(16.dp))
-        // ISP 选择（官方 LiquidBottomTabs 液态玻璃）
-        LiquidBottomTabs(
-            selectedTabIndex = { if (isp == "after") 0 else 1 },
-            onTabSelected = { idx -> onIspChange(if (idx == 0) "after" else "after2") },
-            backdrop = canvasBackdrop,
-            tabsCount = 2,
-            onDragStateChange = onControlDrag,
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            LiquidBottomTab(onClick = { onIspChange("after") }) {
-                Text("教职工", fontSize = 14.sp, color = onSurface)
-            }
-            LiquidBottomTab(onClick = { onIspChange("after2") }) {
-                Text("中国电信", fontSize = 14.sp, color = onSurface)
-            }
+        // 登录表单（由插件字段 schema 动态生成）
+        if (plugin != null) {
+            PluginFields(
+                plugin = plugin,
+                values = fieldValues,
+                onChange = onFieldChange,
+                modifier = Modifier.fillMaxWidth(),
+            )
+        } else {
+            // 无可用插件时的兜底表单
+            TextField(
+                value = fieldValues[Plugin.FIELD_USERNAME] ?: "",
+                onValueChange = { onFieldChange(Plugin.FIELD_USERNAME, it) },
+                modifier = Modifier.fillMaxWidth(),
+                label = "用户名",
+            )
+            Spacer(Modifier.height(8.dp))
+            TextField(
+                value = fieldValues[Plugin.FIELD_PASSWORD] ?: "",
+                onValueChange = { onFieldChange(Plugin.FIELD_PASSWORD, it) },
+                modifier = Modifier.fillMaxWidth(),
+                label = "密码",
+            )
+        }
+        // ISP 账号类型（插件驱动）—— 位置：密码输入框之后、记住密码开关之前
+        // 仅声明 ≥2 个 ISP 时渲染，0/1 个整块隐藏（标题与间距一起隐藏）
+        val ispList = plugin?.isps ?: emptyList()
+        if (ispList.size >= 2) {
+            Spacer(Modifier.height(16.dp))
+            Text(
+                text = "ISP账号类型",
+                fontSize = 15.sp,
+                color = onSurface,
+                textAlign = TextAlign.Start,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 8.dp),
+            )
+            SegmentedDock(
+                options = ispList.map { it.name },
+                selectedIndex = ispIndex,
+                onSelect = { idx -> onIspSelect(idx) },
+                backdrop = canvasBackdrop,
+                onDragStateChange = onControlDrag,
+            )
         }
         Spacer(Modifier.height(16.dp))
         // 记住密码（miuix 卡片）
@@ -534,114 +636,237 @@ private fun LoginPage(
 
 
 @Composable
-private fun LogPage(logVersion: Int) {
+private fun LogPage(logVersion: Int, blurEnabled: Boolean) {
     val context = LocalContext.current
     val onSurface = MiuixTheme.colorScheme.onSurface
-    val secondary = MiuixTheme.colorScheme.onSurfaceContainerVariant
+    val surfaceColor = MiuixTheme.colorScheme.surface
     val boxBg = MiuixTheme.colorScheme.surfaceContainer
-    // 上半部分：运行日志（原有）
-    val logText = remember(logVersion) { LogBuffer.getAllText() }
-    val scrollState = rememberScrollState()
+    // 两个日志框各自只在顶部 / 底部做渐进模糊：与日志页顶部、底部整页模糊栏同款参数
+    val boxBarHeight = 26.dp
+    // 上半部分：运行日志（按行拆分，交给 LazyColumn 只组合/绘制可视区域内的行；
+    // 长日志下上下滑动不再因为单个超长 Text 的整段排版/重绘而掉帧）
+    val runLines = remember(logVersion) { LogBuffer.getAllText().split('\n') }
+    val runListState = rememberLazyListState()
     LaunchedEffect(logVersion) {
-        scrollState.scrollTo(scrollState.maxValue)
+        if (runLines.isNotEmpty()) runListState.scrollToItem(runLines.lastIndex)
     }
-    // 下半部分：全局详细日志
-    val detailLogText = remember(logVersion) { LogBuffer.getDetailAllText() }
-    val detailScrollState = rememberScrollState()
+    // 下半部分：全局详细日志（全量机器日志），同样按行懒加载
+    val detailLines = remember(logVersion) { LogBuffer.getDetailAllText().split('\n') }
+    val detailListState = rememberLazyListState()
     var detailAutoScroll by remember { mutableStateOf(true) }
     LaunchedEffect(logVersion, detailAutoScroll) {
-        if (detailAutoScroll) detailScrollState.scrollTo(detailScrollState.maxValue)
+        if (detailAutoScroll && detailLines.isNotEmpty()) {
+            detailListState.scrollToItem(detailLines.lastIndex)
+        }
     }
-    Column(
+
+    // 导出为文件（SAF，用户选择保存位置），替代原复制到剪贴板
+    fun stamp(): String = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
+    fun writeTo(uri: Uri, text: String) {
+        try {
+            context.contentResolver.openOutputStream(uri)?.use { it.write(text.toByteArray(Charsets.UTF_8)) }
+        } catch (_: Exception) {
+        }
+    }
+    val exportRunLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("text/plain")
+    ) { uri -> if (uri != null) writeTo(uri, LogBuffer.getAllText()) }
+    val exportDetailLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("text/plain")
+    ) { uri -> if (uri != null) writeTo(uri, LogBuffer.getDetailAllText()) }
+
+    // 本页自有 backdrop（与设置页同款拓扑）：捕获边界只包滚动内容，
+    // 顶部 / 底部模糊栏在边界外，避免渲染循环闪退
+    val pageBackdrop = if (blurEnabled) {
+        rememberLayerBackdrop {
+            drawRect(surfaceColor)
+            drawContent()
+        }
+    } else null
+    var topBarHeightPx by remember { mutableIntStateOf(0) }
+    // 两个日志文本框各自的 backdrop：捕获边界只包框内滚动文字，
+    // 框顶部 / 底部的渐进模糊栏画在边界之外，避免渲染循环闪退
+    val runBackdrop = if (blurEnabled) {
+        rememberLayerBackdrop {
+            drawRect(boxBg)
+            drawContent()
+        }
+    } else null
+    val detailBackdrop = if (blurEnabled) {
+        rememberLayerBackdrop {
+            drawRect(boxBg)
+            drawContent()
+        }
+    } else null
+
+    Box(Modifier.fillMaxSize()) {
+      // 滚动内容捕获层（不含顶部 / 底部模糊栏）
+      Box(
         Modifier
             .fillMaxSize()
-            // 整个日志页面可上下滑动（标题、按钮、上下两个日志区一起滚）
-            .verticalScroll(rememberScrollState())
-            // 顶部整体往下挪，避开系统状态栏 / 通知栏
-            .statusBarsPadding()
-            .padding(
-                start = 20.dp,
-                end = 20.dp,
-                top = 8.dp,
-                // 底部加长避让悬浮 Dock 栏（与设置页 bottom=100dp 一致），避免底部内容被遮挡
-                bottom = 100.dp + WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
-            )
-    ) {
+            .then(if (pageBackdrop != null) Modifier.layerBackdrop(pageBackdrop) else Modifier)
+      ) {
+        Column(
+            Modifier
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 20.dp)
+                .padding(top = with(LocalDensity.current) { topBarHeightPx.toDp() })
+                .padding(bottom = 100.dp)
+        ) {
         Spacer(Modifier.height(8.dp))
-        // ============ 上半部分：运行日志（原有功能不变） ============
+        // ============ 运行日志 ============
         Text("运行日志", fontSize = 22.sp, fontWeight = FontWeight.Bold, color = onSurface)
-        Spacer(Modifier.height(4.dp))
-        Text("自动认证过程的实时记录", fontSize = 13.sp, color = secondary)
         Spacer(Modifier.height(12.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            ActionChip("复制", Modifier.weight(1f)) {
-                val txt = LogBuffer.getAllText()
-                val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
-                clipboard.setPrimaryClip(android.content.ClipData.newPlainText("log", txt))
-                LogBuffer.add("UI", "日志已复制")
+            ActionChip("导出", Modifier.weight(1f)) {
+                exportRunLauncher.launch("lumina_run_${stamp()}.log")
             }
             ActionChip("清空", Modifier.weight(1f)) {
                 LogBuffer.clear()
             }
         }
         Spacer(Modifier.height(10.dp))
+        // 日志框：文字滚动时从框顶部 / 底部的渐进模糊中穿过（与整页顶底模糊栏同款做法）
         Box(
             Modifier
                 .fillMaxWidth()
                 .height(240.dp)
                 .clip(RoundedCornerShape(18.dp))
                 .background(boxBg)
-                .padding(12.dp)
         ) {
-            Column(Modifier.verticalScroll(scrollState)) {
-                Text(
-                    if (logText.isBlank()) "暂无日志" else logText,
-                    fontSize = 13.sp,
-                    lineHeight = 20.sp,
-                    color = onSurface
+            // 捕获层只包框内滚动文字，模糊栏画在它上层；LazyColumn 只渲染可见日志行
+            LazyColumn(
+                state = runListState,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .then(if (runBackdrop != null) Modifier.layerBackdrop(runBackdrop) else Modifier),
+                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 12.dp)
+            ) {
+                itemsIndexed(runLines, key = { index, _ -> index }) { _, line ->
+                    Text(
+                        line.ifEmpty { " " },
+                        fontSize = 13.sp,
+                        lineHeight = 20.sp,
+                        color = onSurface
+                    )
+                }
+            }
+            TopBlurBar(
+                backdrop = runBackdrop,
+                blurEnabled = blurEnabled,
+                modifier = Modifier.align(Alignment.TopCenter)
+            ) {
+                Box(
+                    Modifier
+                        .fillMaxWidth()
+                        .height(boxBarHeight)
+                )
+            }
+            BottomBlurBar(
+                backdrop = runBackdrop,
+                blurEnabled = blurEnabled,
+                modifier = Modifier.align(Alignment.BottomCenter)
+            ) {
+                Box(
+                    Modifier
+                        .fillMaxWidth()
+                        .height(boxBarHeight)
                 )
             }
         }
         Spacer(Modifier.height(14.dp))
-        // ============ 下半部分：全局详细日志（非常详细的底层记录） ============
+        // ============ 全局详细日志（全量机器日志） ============
         Text("全局详细日志", fontSize = 22.sp, fontWeight = FontWeight.Bold, color = onSurface)
-        Spacer(Modifier.height(4.dp))
-        Text("服务状态机 / 探测 / 防抖 / 网络底层全量记录", fontSize = 13.sp, color = secondary)
         Spacer(Modifier.height(12.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             ActionChip(if (detailAutoScroll) "暂停滚动" else "自动滚动", Modifier.weight(1f)) {
                 detailAutoScroll = !detailAutoScroll
             }
-            ActionChip("复制", Modifier.weight(1f)) {
-                val txt = LogBuffer.getDetailAllText()
-                val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
-                clipboard.setPrimaryClip(android.content.ClipData.newPlainText("detail_log", txt))
-                LogBuffer.add("UI", "详细日志已复制")
+            ActionChip("导出", Modifier.weight(1f)) {
+                exportDetailLauncher.launch("lumina_detail_${stamp()}.log")
             }
             ActionChip("清空", Modifier.weight(1f)) {
                 LogBuffer.clearDetail()
             }
         }
         Spacer(Modifier.height(10.dp))
+        // 全局详细日志框：同样在框顶部 / 底部加渐进模糊
         Box(
             Modifier
                 .fillMaxWidth()
                 .height(480.dp)
                 .clip(RoundedCornerShape(18.dp))
                 .background(boxBg)
-                .padding(12.dp)
         ) {
-            Column(Modifier.verticalScroll(detailScrollState)) {
-                Text(
-                    if (detailLogText.isBlank()) "暂无详细日志" else detailLogText,
-                    fontSize = 12.sp,
-                    lineHeight = 17.sp,
-                    fontFamily = FontFamily.Monospace,
-                    color = onSurface
+            LazyColumn(
+                state = detailListState,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .then(if (detailBackdrop != null) Modifier.layerBackdrop(detailBackdrop) else Modifier),
+                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 12.dp)
+            ) {
+                itemsIndexed(detailLines, key = { index, _ -> index }) { _, line ->
+                    Text(
+                        line.ifEmpty { " " },
+                        fontSize = 12.sp,
+                        lineHeight = 17.sp,
+                        fontFamily = FontFamily.Monospace,
+                        color = onSurface
+                    )
+                }
+            }
+            TopBlurBar(
+                backdrop = detailBackdrop,
+                blurEnabled = blurEnabled,
+                modifier = Modifier.align(Alignment.TopCenter)
+            ) {
+                Box(
+                    Modifier
+                        .fillMaxWidth()
+                        .height(boxBarHeight)
+                )
+            }
+            BottomBlurBar(
+                backdrop = detailBackdrop,
+                blurEnabled = blurEnabled,
+                modifier = Modifier.align(Alignment.BottomCenter)
+            ) {
+                Box(
+                    Modifier
+                        .fillMaxWidth()
+                        .height(boxBarHeight)
                 )
             }
         }
         Spacer(Modifier.height(8.dp))
+        }
+      }
+
+      // 顶部渐进模糊栏：标题不设文本，仅模糊效果
+      TopBlurBar(
+          backdrop = pageBackdrop,
+          blurEnabled = blurEnabled,
+          modifier = Modifier
+              .align(Alignment.TopCenter)
+              .onSizeChanged { topBarHeightPx = it.height }
+      ) {
+          Box(Modifier.statusBarsPadding().height(10.dp))
+      }
+
+      // 固定在底部 Dock 下方的渐进模糊栏（顶部栏镜像）
+      BottomBlurBar(
+          backdrop = pageBackdrop,
+          blurEnabled = blurEnabled,
+          modifier = Modifier.align(Alignment.BottomCenter),
+      ) {
+          Box(
+              Modifier
+                  .fillMaxWidth()
+                  .navigationBarsPadding()
+                  .height(88.dp)
+          )
+      }
     }
 }
 
@@ -668,17 +893,21 @@ private fun SettingsPage(
     onPollChange: (Float) -> Unit,
     onAutoAuthChange: (Boolean) -> Unit,
     onControlDrag: (Boolean) -> Unit,
+    blurEnabled: Boolean,
 ) {
     val context = LocalContext.current
     val accent = MiuixTheme.colorScheme.primary
     val onSurface = MiuixTheme.colorScheme.onSurface
     val secondary = MiuixTheme.colorScheme.onSurfaceContainerVariant
+    val appColors = LocalAppColors.current
     val scope = rememberCoroutineScope()
     val surfaceColor = MiuixTheme.colorScheme.surface
     val canvasBackdrop = rememberCanvasBackdrop { drawRect(surfaceColor) }
     var enhancedMode by remember { mutableStateOf(PrefUtils.isEnhancedModeEnabled(context)) }
     var notifyDetect by remember { mutableStateOf(PrefUtils.isNotifyDetectEnabled(context)) }
-    var themeMode by remember { mutableIntStateOf(PrefUtils.getThemeMode(context)) }
+    var waitSec by remember { mutableFloatStateOf(PrefUtils.getWaitTimeMs(context) / 1000f) }
+    var hasRoot by remember { mutableStateOf(false) }
+    var hasShizuku by remember { mutableStateOf(false) }
     val realVersion = remember {
         try {
             val pi = context.packageManager.getPackageInfo(context.packageName, 0)
@@ -687,8 +916,6 @@ private fun SettingsPage(
             "v1.1.0"
         }
     }
-    var hasRoot by remember { mutableStateOf(false) }
-    var hasShizuku by remember { mutableStateOf(false) }
     // 进入设置页时检测 root 和 Shizuku 可用性
     LaunchedEffect(Unit) {
         withContext(Dispatchers.IO) {
@@ -724,14 +951,14 @@ private fun SettingsPage(
         if (!notifyAccessGranted && notifyDetect) {
             notifyDetect = false
             PrefUtils.setNotifyDetectEnabled(context, false)
-            LogBuffer.add("UI", "通知使用权已被撤销，通知检测模式已自动关闭")
-            LogBuffer.addDetail("通知检测", "系统通知访问权限被撤销，通知检测模式自动关闭")
+            LogBuffer.add("UI", "notifyaccess=revoked detect=off")
+            LogBuffer.addDetail("NTFY", "access=revoked detect=force_off")
         }
     }
     // 通知检测开启但监听服务未连接（被系统杀掉）-> 请求系统重新绑定恢复
     LaunchedEffect(notifyDetect, notifyAccessGranted) {
         if (notifyDetect && notifyAccessGranted && !GatewayNotificationListener.isListenerConnected()) {
-            LogBuffer.addDetail("通知检测", "设置页：监听未连接，请求系统重新绑定")
+            LogBuffer.addDetail("NTFY", "settings listener=0 act=rebind")
             GatewayNotificationListener.requestRebind(context)
         }
     }
@@ -752,35 +979,58 @@ private fun SettingsPage(
                 enhancedMode = true
                 PrefUtils.setEnhancedModeEnabled(context, true)
                 ShizukuUtils.init(context)
-                LogBuffer.add("UI", "增强模式已开启（Shizuku）")
-                Toast.makeText(context, "增强模式已开启（Shizuku）", Toast.LENGTH_SHORT).show()
+                LogBuffer.add("UI", "enhanced=on via=shizuku")
                 // 增强模式开启：尝试提升后台进程优先级（shell 权限下尽力而为）
                 AutoLoginService.boostPriorityIfEnhanced(context)
             } else {
                 enhancedMode = false
                 PrefUtils.setEnhancedModeEnabled(context, false)
-                Toast.makeText(context, "未授予 Shizuku 权限，无法开启增强模式", Toast.LENGTH_LONG).show()
             }
         }
         Shizuku.addRequestPermissionResultListener(listener)
         onDispose { Shizuku.removeRequestPermissionResultListener(listener) }
     }
-    Column(
+    // 本页自有的嵌套 backdrop（HyperIsland CollapsingPage 同款）：
+    // 捕获边界只包住滚动内容，顶部模糊栏在边界之外，
+    // 避免模糊节点采样到含自身的 Pager 级 backdrop、形成渲染循环而闪退
+    val pageBackdrop = if (blurEnabled) {
+        rememberLayerBackdrop {
+            drawRect(surfaceColor)
+            drawContent()
+        }
+    } else null
+    // 顶部模糊栏实测高度（含状态栏）：滚动内容据此精确避让，字号缩放也能对齐
+    var topBarHeightPx by remember { mutableIntStateOf(0) }
+    // 拖动滑块/开关时：同时锁定外层 Pager 左右翻页与本页上下滚动
+    var pageControlDragging by remember { mutableStateOf(false) }
+    val settingsListState = rememberLazyListState()
+    val handleControlDrag: (Boolean) -> Unit = { dragging ->
+        pageControlDragging = dragging
+        onControlDrag(dragging)
+    }
+    Box(Modifier.fillMaxSize()) {
+      // 滚动内容捕获层（填充整页，不含顶部模糊栏）
+      Box(
         Modifier
             .fillMaxSize()
-            .verticalScroll(rememberScrollState())
-            // 与日志页保持一致的顶部避让：整体往下挪，避开状态栏/通知栏
-            .statusBarsPadding()
-            .padding(horizontal = 20.dp)
-            .padding(top = 8.dp)
-            .padding(bottom = 100.dp)
-    ) {
-        Spacer(Modifier.height(8.dp))
-        Text("设置", fontSize = 22.sp, fontWeight = FontWeight.Bold, color = onSurface)
-        Spacer(Modifier.height(4.dp))
-        Text("权限、检测速度与开关", fontSize = 13.sp, color = secondary)
-        Spacer(Modifier.height(16.dp))
+            .then(if (pageBackdrop != null) Modifier.layerBackdrop(pageBackdrop) else Modifier)
+      ) {
+        // 懒加载：只组合/绘制可见卡片，上下滑动只重绘可视内容，backdrop 捕获也只处理可见项
+        LazyColumn(
+          state = settingsListState,
+          modifier = Modifier.fillMaxSize(),
+          // 拖动滑块/开关时锁定本页上下滚动
+          userScrollEnabled = !pageControlDragging,
+          // 内容延伸到顶部模糊栏下方，滚动时从模糊中穿过（HyperIsland 同款）
+          contentPadding = PaddingValues(
+              start = 20.dp,
+              end = 20.dp,
+              top = with(LocalDensity.current) { topBarHeightPx.toDp() },
+              bottom = 100.dp
+          )
+        ) {
         // 权限卡片（miuix 卡片，SukiSU 同款）
+        item {
         Card(Modifier.fillMaxWidth()) {
             PermRow("定位权限", "识别校园网 WiFi 必需", locGranted) {
                 locLauncher.launch(Manifest.permission.ACCESS_FINE_LOCATION)
@@ -812,9 +1062,10 @@ private fun SettingsPage(
                 openAutoStartSettings(context)
             }
         }
-        Spacer(Modifier.height(16.dp))
+        }
         // 检测速度卡片
-        Card(Modifier.fillMaxWidth()) {
+        item {
+        Card(Modifier.fillMaxWidth().padding(top = 16.dp)) {
             Column(Modifier.padding(16.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text("检测速度", fontSize = 15.sp, color = onSurface, modifier = Modifier.weight(1f))
@@ -831,13 +1082,140 @@ private fun SettingsPage(
                     valueRange = 0.5f..10f,
                     visibilityThreshold = 0.001f,
                     backdrop = canvasBackdrop,
-                    onDragStateChange = onControlDrag,
+                    onDragStateChange = handleControlDrag,
                 )
+                // 等待时间：网络就绪后、认证前的稳定等待
+                Spacer(Modifier.height(16.dp))
+                Box(
+                    Modifier
+                        .fillMaxWidth()
+                        .height(1.dp)
+                        .background(MiuixTheme.colorScheme.surfaceContainerHigh)
+                )
+                Spacer(Modifier.height(16.dp))
+                // 等待时间不可用时，黄色边框与「已禁用」标识共用的渐显渐隐进度：0 = 隐藏，1 = 显示
+                val waitDisabled = notifyDetect || !blurEnabled
+                val waitDisabledAlpha = remember { Animatable(if (waitDisabled) 1f else 0f) }
+                LaunchedEffect(waitDisabled) {
+                    waitDisabledAlpha.animateTo(
+                        targetValue = if (waitDisabled) 1f else 0f,
+                        animationSpec = tween(durationMillis = 320, easing = FastOutSlowInEasing)
+                    )
+                }
+                // 模糊强度保留原行为：仅通知检测模式触发
+                val waitBlur = remember { Animatable(if (notifyDetect) 1f else 0f) }
+                LaunchedEffect(notifyDetect) {
+                    waitBlur.animateTo(
+                        targetValue = if (notifyDetect) 1f else 0f,
+                        animationSpec = tween(durationMillis = 320, easing = FastOutSlowInEasing)
+                    )
+                }
+                val waitBadgeAlpha = waitDisabledAlpha.value.coerceIn(0f, 1f)
+                val waitYellow = Color(0xFFFFC107)
+                // 通知检测模式：不置灰，只把「标题 + 滑块」这一层盖高斯模糊，边缘羽化表示不可用
+                // 禁用态：黄色边框 + 黄色「已禁用」文字画在模糊层上层，随禁用进度淡入淡出且始终清晰
+                Box(
+                    Modifier
+                        .fillMaxWidth()
+                        // 上下扩大模糊覆盖范围（只增加画布高度，内部滑块宽度不变、不缩进）
+                        .padding(vertical = 14.dp)
+                        // 黄框画在模糊层之外的外层画布上：不被模糊糊掉，始终清晰
+                        .drawBehind {
+                            if (waitBadgeAlpha > 0.001f) {
+                                val inset = 1.dp.toPx()
+                                drawRoundRect(
+                                    color = waitYellow.copy(alpha = waitBadgeAlpha),
+                                    topLeft = Offset(inset, inset),
+                                    size = Size(size.width - inset * 2f, size.height - inset * 2f),
+                                    cornerRadius = CornerRadius(16.dp.toPx()),
+                                    style = Stroke(width = 1.5.dp.toPx())
+                                )
+                            }
+                        }
+                ) {
+                    // 模糊只作用在「标题 + 滑块」这一层；黄框、黄底衬、「已禁用」文字画在它上层，保持清晰不被糊掉
+                    Column(
+                        Modifier
+                            .fillMaxWidth()
+                            .then(
+                                if (blurEnabled && waitBlur.value > 0.001f) {
+                                    Modifier.blur(
+                                        radiusX = 9.dp * waitBlur.value,
+                                        radiusY = 9.dp * waitBlur.value,
+                                        // Unbounded：模糊不被边界硬裁剪，向四周自然羽化，
+                                        // 左右两端也柔和溢出（不通过加大圆角实现）
+                                        edgeTreatment = BlurredEdgeTreatment.Unbounded
+                                    )
+                                } else Modifier
+                            )
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                "等待时间",
+                                fontSize = 15.sp,
+                                color = onSurface,
+                                modifier = Modifier.weight(1f)
+                            )
+                            Text(
+                                String.format(Locale.US, "%.0f 秒", waitSec),
+                                fontSize = 14.sp,
+                                color = secondary
+                            )
+                        }
+                        Spacer(Modifier.height(8.dp))
+                        LiquidSlider(
+                            value = { waitSec },
+                            onValueChange = { sec ->
+                                // 拖动中保持连续，滑块才跟手；数字显示 %.0f 自动取整，
+                                // 持久化按整数秒写，松手再回弹吸附
+                                waitSec = sec
+                                PrefUtils.setWaitTimeMs(context, sec.fastRoundToInt().toLong() * 1000L)
+                            },
+                            valueRange = 0f..15f,
+                            visibilityThreshold = 0.001f,
+                            backdrop = canvasBackdrop,
+                            onDragStateChange = handleControlDrag,
+                            // 通知检测模式走快速通道、跳过该等待，开启时不可拖动
+                            enabled = !notifyDetect,
+                            // 松手回弹到整数秒
+                            valueSnap = { it.fastRoundToInt().toFloat() },
+                        )
+                    }
+                    // 不支持模糊的设备：盖一层极淡 surface 遮罩表示禁用（不发灰），跟随淡入淡出
+                    if (!blurEnabled && waitBlur.value > 0.001f) {
+                        Box(
+                            Modifier
+                                .matchParentSize()
+                                .background(surfaceColor.copy(alpha = 0.4f * waitBlur.value))
+                        )
+                    }
+                    if (waitBadgeAlpha > 0.001f) {
+                        // 淡黄底衬：让黄色文字在模糊层上依然可读
+                        Box(
+                            Modifier
+                                .matchParentSize()
+                                .padding(vertical = 14.dp)
+                                .background(waitYellow.copy(alpha = 0.18f * waitBadgeAlpha))
+                        )
+                        Box(
+                            Modifier.matchParentSize(),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                "已禁用",
+                                fontSize = 15.sp,
+                                color = waitYellow.copy(alpha = waitBadgeAlpha)
+                            )
+                        }
+                    }
+                }
             }
         }
-        Spacer(Modifier.height(16.dp))
-        // 自动认证卡片
-        Card(Modifier.fillMaxWidth()) {
+        }
+        // 开关卡片：自动认证 / 通知检测模式 / 增强模式，合到同一个框
+        item {
+        Card(Modifier.fillMaxWidth().padding(top = 16.dp)) {
+            // —— 自动认证 ——
             Row(
                 Modifier
                     .fillMaxWidth()
@@ -845,116 +1223,91 @@ private fun SettingsPage(
                     .height(64.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Column(Modifier.weight(1f)) {
-                    Text("自动认证", fontSize = 15.sp, color = onSurface)
-                    Text("连接校园网 WiFi 自动登录", fontSize = 12.sp, color = secondary)
-                }
+                Text(
+                    "自动认证",
+                    fontSize = 15.sp,
+                    color = onSurface,
+                    maxLines = 1,
+                    modifier = Modifier.weight(1f)
+                )
                 LiquidToggle(
                     selected = { autoAuth },
                     onSelect = onAutoAuthChange,
                     backdrop = canvasBackdrop,
-                    onDragStateChange = onControlDrag,
+                    onDragStateChange = handleControlDrag,
                 )
             }
-        }
-        Spacer(Modifier.height(16.dp))
-        // 通知检测模式卡片（独立检测逻辑，无需 root / Shizuku）：
-        // 监听校园网关认证/下线通知，捕获到立即触发会话探测；
-        // 监听未连接时点击卡片可请求重新绑定
-        Card(
-            Modifier
-                .fillMaxWidth()
-                .clickable(enabled = notifyAccessGranted && !listenerConnected) {
-                    LogBuffer.add("UI", "点击重新连接通知监听")
-                    GatewayNotificationListener.requestRebind(context)
-                    Toast.makeText(context, "已请求重新连接通知监听", Toast.LENGTH_SHORT).show()
-                }
-        ) {
+            PermDivider()
+            // —— 通知检测模式 ——
             Row(
                 Modifier
                     .fillMaxWidth()
+                    // 监听未连接时点按整行可请求重新绑定（原卡片行为）
+                    .clickable(enabled = notifyAccessGranted && !listenerConnected) {
+                        LogBuffer.add("UI", "ntfy rebind=request src=click")
+                        GatewayNotificationListener.requestRebind(context)
+                    }
                     .padding(horizontal = 16.dp)
                     .height(64.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Column(Modifier.weight(1f)) {
-                    Text("通知检测模式", fontSize = 15.sp, color = onSurface)
-                    Text(
-                        when {
-                            !notifyAccessGranted -> "需在系统设置中授予通知使用权"
-                            listenerConnected -> "监听已连接 · 捕获校园网通知时立即响应"
-                            else -> "监听未连接 · 点按重新连接"
-                        },
-                        fontSize = 12.sp,
-                        color = if (!notifyAccessGranted || listenerConnected) secondary
-                        else Color(0xFFFF8F00)
-                    )
-                }
+                Text(
+                    "通知检测模式",
+                    fontSize = 15.sp,
+                    color = onSurface,
+                    maxLines = 1,
+                    modifier = Modifier.weight(1f)
+                )
                 LiquidToggle(
                     selected = { notifyDetect && notifyAccessGranted },
                     backdrop = canvasBackdrop,
-                    onDragStateChange = onControlDrag,
+                    onDragStateChange = handleControlDrag,
                     onSelect = { on ->
                         if (on) {
                             if (notifyAccessGranted) {
                                 notifyDetect = true
                                 PrefUtils.setNotifyDetectEnabled(context, true)
-                                LogBuffer.add("UI", "通知检测模式已开启")
-                                Toast.makeText(context, "通知检测模式已开启", Toast.LENGTH_SHORT).show()
+                                LogBuffer.add("UI", "detect=on")
                             } else {
-                                // 无通知监听权限：提示并跳转系统授权页（系统硬性限制，无法直接弹窗申请）
-                                Toast.makeText(
-                                    context,
-                                    "请先授予通知使用权，用于监听校园网认证通知",
-                                    Toast.LENGTH_LONG
-                                ).show()
+                                // 无通知监听权限：跳转系统授权页（系统硬性限制，无法直接弹窗申请）
                                 try {
                                     context.startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
                                 } catch (e: Exception) {
-                                    Toast.makeText(context, "请在系统设置 - 通知使用权中开启", Toast.LENGTH_LONG).show()
+                                    LogBuffer.addDetail("NTFY", "open_settings err=" + e.message)
                                 }
                             }
                         } else {
                             notifyDetect = false
                             PrefUtils.setNotifyDetectEnabled(context, false)
-                            LogBuffer.add("UI", "通知检测模式已关闭")
+                            LogBuffer.add("UI", "detect=off")
                         }
                     }
                 )
             }
-        }
-        Spacer(Modifier.height(16.dp))
-        // 增强模式卡片（需 root / Shizuku）
-        Card(Modifier.fillMaxWidth()) {
+            PermDivider()
+            // —— 增强模式 ——
             Row(
                 Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 16.dp)
-                    .height(72.dp),
+                    .height(64.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                    Column(Modifier.weight(1f)) {
-                        Text(
-                            when {
-                                hasRoot -> "增强模式（root 提权）"
-                                hasShizuku -> "增强模式（Shizuku 提权）"
-                                else -> "增强模式（需 root 或 Shizuku）"
-                            },
-                            fontSize = 15.sp, color = onSurface
-                        )
-                        Text(
-                            when {
-                                hasRoot -> "用 root 权限检查校园网 WiFi，最可靠"
-                                hasShizuku -> "用 Shizuku/shell 检查校园网 WiFi，更可靠"
-                                else -> "需要 root 或 Shizuku 权限才能开启"
-                            },
-                            fontSize = 12.sp, color = secondary
-                        )
-                    }
-                    LiquidToggle(
-                        selected = { enhancedMode },
+                Text(
+                    when {
+                        hasRoot -> "增强模式（root）"
+                        hasShizuku -> "增强模式（Shizuku）"
+                        else -> "增强模式（需 root 或 Shizuku）"
+                    },
+                    fontSize = 15.sp,
+                    color = onSurface,
+                    maxLines = 1,
+                    modifier = Modifier.weight(1f)
+                )
+                LiquidToggle(
+                    selected = { enhancedMode },
                     backdrop = canvasBackdrop,
-                    onDragStateChange = onControlDrag,
+                    onDragStateChange = handleControlDrag,
                     onSelect = { on ->
                         if (on) {
                             enhancedMode = true
@@ -967,8 +1320,7 @@ private fun SettingsPage(
                                         rootOk -> {
                                             hasRoot = true
                                             PrefUtils.setEnhancedModeEnabled(context, true)
-                                            LogBuffer.add("UI", "增强模式已开启（root）")
-                                            Toast.makeText(context, "增强模式已开启（root）", Toast.LENGTH_SHORT).show()
+                                            LogBuffer.add("UI", "enhanced=on via=root")
                                             // 增强模式开启：root 写 oom_score_adj + renice，把进程优先级拉满
                                             AutoLoginService.boostPriorityIfEnhanced(context)
                                         }
@@ -977,8 +1329,7 @@ private fun SettingsPage(
                                             hasShizuku = true
                                             PrefUtils.setEnhancedModeEnabled(context, true)
                                             ShizukuUtils.init(context)
-                                            LogBuffer.add("UI", "增强模式已开启（Shizuku）")
-                                            Toast.makeText(context, "增强模式已开启（Shizuku）", Toast.LENGTH_SHORT).show()
+                                            LogBuffer.add("UI", "enhanced=on via=shizuku")
                                             // 增强模式开启：尝试提升后台进程优先级（shell 权限下尽力而为）
                                             AutoLoginService.boostPriorityIfEnhanced(context)
                                         }
@@ -989,18 +1340,13 @@ private fun SettingsPage(
                                             } catch (e: Exception) {
                                                 enhancedMode = false
                                                 PrefUtils.setEnhancedModeEnabled(context, false)
-                                                Toast.makeText(context, "Shizuku 授权失败", Toast.LENGTH_LONG).show()
+                                                LogBuffer.add("UI", "enhanced shizuku grant_err=" + e.message)
                                             }
                                         }
-                                        // 都没有 -> 提示
+                                        // 都没有 -> 不开启
                                         else -> {
                                             enhancedMode = false
                                             PrefUtils.setEnhancedModeEnabled(context, false)
-                                            Toast.makeText(
-                                                context,
-                                                "需要 root 或 Shizuku 权限。root 可直接使用，Shizuku 需安装并授权本应用",
-                                                Toast.LENGTH_LONG
-                                            ).show()
                                         }
                                     }
                                 }
@@ -1008,15 +1354,38 @@ private fun SettingsPage(
                         } else {
                             enhancedMode = false
                             PrefUtils.setEnhancedModeEnabled(context, false)
-                            LogBuffer.add("UI", "增强模式已关闭")
+                            LogBuffer.add("UI", "enhanced=off")
                         }
                     }
                 )
             }
         }
-        Spacer(Modifier.height(24.dp))
+        }
+        // 主题与配色入口（独立页面：主题模式 + 每类元素的调色板）
+        item {
+        Card(Modifier.fillMaxWidth().padding(top = 24.dp)) {
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .clickable {
+                        context.startActivity(android.content.Intent(context, com.luminaauth.theme.ThemeSettingsActivity::class.java))
+                    }
+                    .padding(horizontal = 16.dp, vertical = 14.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    "主题与配色",
+                    fontSize = 15.sp,
+                    color = onSurface,
+                    modifier = Modifier.weight(1f)
+                )
+                Text("›", fontSize = 20.sp, color = secondary)
+            }
+        }
+        }
         // 高级设置入口
-        Card(Modifier.fillMaxWidth()) {
+        item {
+        Card(Modifier.fillMaxWidth().padding(top = 12.dp)) {
             Row(
                 Modifier
                     .fillMaxWidth()
@@ -1026,16 +1395,19 @@ private fun SettingsPage(
                     .padding(horizontal = 16.dp, vertical = 14.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Column(Modifier.weight(1f)) {
-                    Text("高级设置", fontSize = 15.sp, color = onSurface)
-                    Text("实验性功能与调试选项", fontSize = 12.sp, color = secondary)
-                }
+                Text(
+                    "高级设置",
+                    fontSize = 15.sp,
+                    color = onSurface,
+                    modifier = Modifier.weight(1f)
+                )
                 Text("›", fontSize = 20.sp, color = secondary)
             }
         }
-        Spacer(Modifier.height(12.dp))
+        }
         // 关于入口
-        Card(Modifier.fillMaxWidth()) {
+        item {
+        Card(Modifier.fillMaxWidth().padding(top = 12.dp)) {
             Row(
                 Modifier
                     .fillMaxWidth()
@@ -1052,61 +1424,42 @@ private fun SettingsPage(
                 Text("›", fontSize = 20.sp, color = secondary)
             }
         }
-        Spacer(Modifier.height(12.dp))
-        // 主题模式设置
-        Card(Modifier.fillMaxWidth()) {
-            Column(Modifier.padding(16.dp)) {
-                Text("主题模式", fontSize = 15.sp, color = onSurface)
-                Spacer(Modifier.height(4.dp))
-                Text("跟随系统 / 浅色 / 深色，全界面自动适配", fontSize = 12.sp, color = secondary)
-                Spacer(Modifier.height(12.dp))
-                LiquidBottomTabs(
-                    selectedTabIndex = { themeMode },
-                    onTabSelected = { idx ->
-                        themeMode = idx
-                        PrefUtils.setThemeMode(context, idx)
-                        android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
-                            (context as android.app.Activity).recreate()
-                        }, 300)
-                    },
-                    backdrop = canvasBackdrop,
-                    tabsCount = 3,
-                    onDragStateChange = onControlDrag,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(48.dp)
-                ) {
-                    LiquidBottomTab(onClick = {
-                        themeMode = 0
-                        PrefUtils.setThemeMode(context, 0)
-                        android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
-                            (context as android.app.Activity).recreate()
-                        }, 300)
-                    }) {
-                        Text("跟随系统", fontSize = 13.sp, color = onSurface)
-                    }
-                    LiquidBottomTab(onClick = {
-                        themeMode = 1
-                        PrefUtils.setThemeMode(context, 1)
-                        android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
-                            (context as android.app.Activity).recreate()
-                        }, 300)
-                    }) {
-                        Text("浅色", fontSize = 13.sp, color = onSurface)
-                    }
-                    LiquidBottomTab(onClick = {
-                        themeMode = 2
-                        PrefUtils.setThemeMode(context, 2)
-                        android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
-                            (context as android.app.Activity).recreate()
-                        }, 300)
-                    }) {
-                        Text("深色", fontSize = 13.sp, color = onSurface)
-                    }
-                }
-            }
         }
-        Spacer(Modifier.height(40.dp))
+        }
+      }
+
+      // 固定在顶部的渐进模糊栏 + 大标题（HyperIsland 同款），采样本页自有 backdrop
+      TopBlurBar(
+          backdrop = pageBackdrop,
+          blurEnabled = blurEnabled,
+          modifier = Modifier
+              .align(Alignment.TopCenter)
+              .onSizeChanged { topBarHeightPx = it.height }
+      ) {
+          Column(
+              Modifier
+                  .statusBarsPadding()
+                  .padding(horizontal = 20.dp)
+                  .padding(top = 16.dp)
+          ) {
+              Text("设置", fontSize = 22.sp, fontWeight = FontWeight.Bold, color = onSurface)
+              Spacer(Modifier.height(16.dp))
+          }
+      }
+
+      // 固定在底部 Dock 下方的渐进模糊栏（顶部栏镜像），采样本页自有 backdrop
+      BottomBlurBar(
+          backdrop = pageBackdrop,
+          blurEnabled = blurEnabled,
+          modifier = Modifier.align(Alignment.BottomCenter),
+      ) {
+          Box(
+              Modifier
+                  .fillMaxWidth()
+                  .navigationBarsPadding()
+                  .height(88.dp)
+          )
+      }
     }
 }
 
@@ -1115,9 +1468,7 @@ private fun PermRow(label: String, desc: String, granted: Boolean, onClick: () -
     val onSurface = MiuixTheme.colorScheme.onSurface
     val secondary = MiuixTheme.colorScheme.onSurfaceContainerVariant
     val accent = MiuixTheme.colorScheme.primary
-    val surfaceColor = MiuixTheme.colorScheme.surface
-    val canvasBackdrop = rememberCanvasBackdrop { drawRect(surfaceColor) }
-    val green = Color(0xFF43A047)
+    val green = LocalAppColors.current.success
     Row(
         Modifier
             .fillMaxWidth()

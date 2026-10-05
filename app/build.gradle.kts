@@ -12,13 +12,13 @@ android {
         minSdk = 29
         multiDexEnabled = true
         targetSdk = 36
-        versionCode = 114
-        versionName = "1.1.0"
+        versionCode = 153
+        versionName = "1.1.3"
     }
 
     signingConfigs {
         create("release") {
-            storeFile = file("../../schoolautologin-release.keystore")
+            storeFile = file("../schoolautologin-release.keystore")
             storePassword = "schoolautologin123"
             keyAlias = "schoolautologin"
             keyPassword = "schoolautologin123"
@@ -27,9 +27,19 @@ android {
 
     buildTypes {
         release {
+            // 关闭 R8 混淆/缩减：保留全部类名，日志可读、避免误删反射代码
             isMinifyEnabled = false
+            isShrinkResources = false
             signingConfig = signingConfigs.getByName("release")
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+        }
+    }
+
+    packaging {
+        // 压缩 DEX（minSdk>=28 时 AGP 默认未压缩，导致 APK 偏大）
+        // 仅压缩 dex；原生库 .so 仍保持 Stored 页对齐，不影响安装
+        dex {
+            useLegacyPackaging = true
         }
     }
 
@@ -41,6 +51,10 @@ android {
     buildFeatures {
         compose = true
         aidl = true
+    }
+
+    lint {
+        checkReleaseBuilds = false
     }
 }
 
@@ -59,11 +73,14 @@ dependencies {
     implementation("androidx.compose.foundation:foundation")
     implementation("androidx.compose.material3:material3")
 
-    implementation("top.yukonga.miuix.kmp:miuix-ui-android:0.9.3")
-    implementation("top.yukonga.miuix.kmp:miuix-icons-android:0.9.3")
-    implementation("top.yukonga.miuix.kmp:miuix-blur-android:0.9.3")
+    implementation("top.yukonga.miuix.kmp:miuix-ui-android:0.9.4")
+    implementation("top.yukonga.miuix.kmp:miuix-icons-android:0.9.4")
+    implementation("top.yukonga.miuix.kmp:miuix-blur-android:0.9.4")
     implementation("dev.rikka.shizuku:api:13.1.5")
     implementation("dev.rikka.shizuku:provider:13.1.5")
     implementation("io.github.kyant0:backdrop:1.0.6")
     implementation("io.github.kyant0:shapes:1.2.0")
+
+    testImplementation("junit:junit:4.13.2")
+    testImplementation("org.json:json:20240303")
 }

@@ -3,6 +3,7 @@
 package com.luminaauth
 
 import com.luminaauth.ThemeUtils
+import com.luminaauth.theme.LocalAppColors
 
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.EaseOut
@@ -170,10 +171,11 @@ fun FloatingBottomBar(
     val context = LocalContext.current
     val isInDark = ThemeUtils.getIsDark(context) ?: isSystemInDarkTheme()
     val pillShape = remember { CircleShape }
-    val accentColor = Color(0xFF3482FF)
+    val appColors = LocalAppColors.current
+    val accentColor = appColors.controlAccent
     // SukiSU 同款：液态玻璃 Dock 上的图标/文字颜色不依赖 Miuix 主题 onSurface，
-    // 深色玻璃背景上恒为白色、浅色背景下固定深灰，避免任何主题组合下出现深色图标不可见
-    val tabContentColor = if (isInDark) Color.White else Color(0xFF3A3A3A)
+    // 取自统一调色板「玻璃上图标/文字」，深色玻璃为白、浅色玻璃为深灰，避免深色图标不可见
+    val tabContentColor = appColors.contentOnGlass
     val surfaceContainer = MiuixTheme.colorScheme.surfaceContainer
     val containerColor = if (isBlurEnabled) surfaceContainer.copy(0.4f) else surfaceContainer
 
