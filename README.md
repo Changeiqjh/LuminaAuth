@@ -19,7 +19,6 @@
 - 🔔 **前台服务守护**：常驻通知实时显示认证状态，单条通知增量更新
 - 🎨 **液态玻璃 UI**：基于 Jetpack Compose + miuix-kmp + AndroidLiquidGlass，SukiSU Ultra 同款视觉
 - 🌈 **主题与配色**：主题色 / 状态色 / 玻璃元素各自独立调色板，可逐项自定义并持久化
-- 🚀 **高刷流畅渲染**：解锁高刷新率，列表按行懒加载，翻页 / 滑动稳定跟手
 - 🔑 **记住密码**：账号凭据本地加密持久化存储
 
 ## 截图
@@ -32,7 +31,7 @@
 
 ## 下载
 
-前往 [Releases](https://github.com/<你的用户名>/LuminaAuth/releases) 下载最新的 `LuminaAuth-*-release.apk` 安装即可。应用已使用固定 release 证书签名，可直接覆盖升级。
+前往 [Releases](https://github.com/Changeiqjh/LuminaAuth/releases) 下载最新的 `LuminaAuth-*-release.apk` 安装即可。应用已使用固定 release 证书签名，可直接覆盖升级。
 
 ## 使用方法
 
@@ -145,12 +144,6 @@ login:
 3. **Root 强绑**：增强模式 + Root 时执行 `cmd notification allow_listener`。
 
 触发时机：每次启动自动重绑（延迟约 1.2s）、设置页每 3 秒轮询监听状态、前台服务运行中断开即重连；流程带冷却与全局互斥，避免高频触发。
-
-## 性能与高刷新率
-
-- 窗口层面关闭系统「省电帧率均衡」、开启触摸提帧，并将首选显示模式指向同分辨率下的最高刷新率。
-- 日志页、设置页使用 `LazyColumn` 按行 / 按卡片懒加载，只组合与绘制可见内容。
-- Pager 预加载相邻页面、使用硬件图层缓存，翻页动画以缓动曲线替代弹簧回弹。
 
 ## 技术栈
 
