@@ -668,10 +668,10 @@ private fun LogPage(logVersion: Int, blurEnabled: Boolean) {
 
     // 本页自有 backdrop（与设置页同款拓扑）：捕获边界只包滚动内容，
     // 顶部 / 底部模糊栏在边界外，避免渲染循环闪退
-    // 外层滚动状态提升到此处：滚动进行时冻结渐进模糊（停止 backdrop 捕获与采样，顶部栏降级纯色），
-    // 消除滚动期间的整屏二次渲染，滚动停止后恢复模糊
+    // 外层滚动状态提升到此处：滚动进行时保持渐进模糊（不冻结），
+    // 滚动内容实时从模糊栏下方穿过
     val outerScrollState = rememberScrollState()
-    val effectiveBlur = blurEnabled && !outerScrollState.isScrollInProgress
+    val effectiveBlur = blurEnabled
     val pageBackdrop = if (effectiveBlur) {
         rememberLayerBackdrop {
             drawRect(surfaceColor)
@@ -911,10 +911,10 @@ private fun SettingsPage(
     // 本页自有的嵌套 backdrop（HyperIsland CollapsingPage 同款）：
     // 捕获边界只包住滚动内容，顶部模糊栏在边界之外，
     // 避免模糊节点采样到含自身的 Pager 级 backdrop、形成渲染循环而闪退
-    // 滚动状态提升到此处：滚动进行时冻结渐进模糊（停止 backdrop 捕获与采样，顶部栏降级纯色），
-    // 消除滚动期间的整屏二次渲染，滚动停止后恢复模糊
+    // 滚动状态提升到此处：滚动进行时保持渐进模糊（不冻结），
+    // 滚动内容实时从模糊栏下方穿过
     val outerScrollState = rememberScrollState()
-    val effectiveBlur = blurEnabled && !outerScrollState.isScrollInProgress
+    val effectiveBlur = blurEnabled
     val pageBackdrop = if (effectiveBlur) {
         rememberLayerBackdrop {
             drawRect(surfaceColor)
