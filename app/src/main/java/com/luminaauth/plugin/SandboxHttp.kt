@@ -80,16 +80,23 @@ object SandboxHttp {
                     var line: String?
                     while (r.readLine().also { line = it } != null) {
                         sb.append(line)
+                        // 上限防御：异常巨大的门户页面不应把内存打满
+                        if (sb.length >= MAX_BODY_CHARS) break
                     }
                 }
             }
             return Response(status, sb.toString(), null)
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
+            // 兜底范围必须是 Throwable：Error（OOM / StackOverflow / 类初始化失败）
+            // 若逃逸出登录线程就会成为未捕获异常并直接终止进程（点击登录后闪退）。
             return Response(-1, "", "transport: ${e.javaClass.simpleName} ${e.message}")
         } finally {
             conn?.disconnect()
         }
     }
+
+    /** 单次响应最多读取的字符数，防止异常巨大的页面耗尽内存。 */
+    private const val MAX_BODY_CHARS = 262_144
 
     private fun isHostAllowed(plugin: Plugin, host: String, declaredPort: Int): Boolean {
         val effectivePort = if (declaredPort >= 0) declaredPort else null

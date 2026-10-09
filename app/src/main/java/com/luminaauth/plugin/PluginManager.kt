@@ -49,15 +49,39 @@ object PluginManager {
         return result
     }
 
+    /**
+     * 绝不抛异常的取用当前插件：登录链路在后台线程调用它，抛出即可能演变成
+     * 未捕获异常并终止进程。全部插件不可用时返回全空兜底对象，让上层以
+     * “插件未配置”这类可读文案正常失败，而不是崩溃。
+     */
     fun active(context: Context): Plugin {
-        val all = list(context)
-        require(all.isNotEmpty()) { "no plugins available" }
-        val id = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-            .getString(KEY_ACTIVE, null)
-        return all.firstOrNull { it.id == id }
-            ?: all.firstOrNull { it.source == PluginSource.BUILTIN }
-            ?: all.first()
+        return try {
+            val all = list(context)
+            if (all.isEmpty()) {
+                com.luminaauth.LogBuffer.addDetail("PLUGIN", "active_fallback reason=no_plugins")
+                emptyPlugin()
+            } else {
+                val id = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                    .getString(KEY_ACTIVE, null)
+                all.firstOrNull { it.id == id }
+                    ?: all.firstOrNull { it.source == PluginSource.BUILTIN }
+                    ?: all.first()
+            }
+        } catch (t: Throwable) {
+            com.luminaauth.LogBuffer.addDetail(
+                "PLUGIN", "active_fail err=${t.javaClass.simpleName} ${t.message}",
+            )
+            emptyPlugin()
+        }
     }
+
+    /** 全空兜底插件：仅在插件资源全部不可用时返回，绝不为 null。 */
+    private fun emptyPlugin(): Plugin = Plugin(
+        id = "", name = "", version = 0, description = "",
+        ssidPatterns = emptyList(), hosts = emptyList(), fields = emptyList(),
+        isps = emptyList(), check = null, loginSteps = emptyList(),
+        source = PluginSource.BUILTIN, fileName = "",
+    )
 
     fun setActive(context: Context, id: String) {
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)

@@ -32,7 +32,6 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.offset
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.core.Animatable
@@ -50,9 +49,6 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.itemsIndexed
-import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.Text
 import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
@@ -641,23 +637,18 @@ private fun LogPage(logVersion: Int, blurEnabled: Boolean) {
     val onSurface = MiuixTheme.colorScheme.onSurface
     val surfaceColor = MiuixTheme.colorScheme.surface
     val boxBg = MiuixTheme.colorScheme.surfaceContainer
-    // 两个日志框各自只在顶部 / 底部做渐进模糊：与日志页顶部、底部整页模糊栏同款参数
-    val boxBarHeight = 26.dp
-    // 上半部分：运行日志（按行拆分，交给 LazyColumn 只组合/绘制可视区域内的行；
-    // 长日志下上下滑动不再因为单个超长 Text 的整段排版/重绘而掉帧）
-    val runLines = remember(logVersion) { LogBuffer.getAllText().split('\n') }
-    val runListState = rememberLazyListState()
+    // 上半部分：运行日志
+    val logText = remember(logVersion) { LogBuffer.getAllText() }
+    val scrollState = rememberScrollState()
     LaunchedEffect(logVersion) {
-        if (runLines.isNotEmpty()) runListState.scrollToItem(runLines.lastIndex)
+        scrollState.scrollTo(scrollState.maxValue)
     }
-    // 下半部分：全局详细日志（全量机器日志），同样按行懒加载
-    val detailLines = remember(logVersion) { LogBuffer.getDetailAllText().split('\n') }
-    val detailListState = rememberLazyListState()
+    // 下半部分：全局详细日志（全量机器日志）
+    val detailLogText = remember(logVersion) { LogBuffer.getDetailAllText() }
+    val detailScrollState = rememberScrollState()
     var detailAutoScroll by remember { mutableStateOf(true) }
     LaunchedEffect(logVersion, detailAutoScroll) {
-        if (detailAutoScroll && detailLines.isNotEmpty()) {
-            detailListState.scrollToItem(detailLines.lastIndex)
-        }
+        if (detailAutoScroll) detailScrollState.scrollTo(detailScrollState.maxValue)
     }
 
     // 导出为文件（SAF，用户选择保存位置），替代原复制到剪贴板
@@ -677,27 +668,17 @@ private fun LogPage(logVersion: Int, blurEnabled: Boolean) {
 
     // 本页自有 backdrop（与设置页同款拓扑）：捕获边界只包滚动内容，
     // 顶部 / 底部模糊栏在边界外，避免渲染循环闪退
-    val pageBackdrop = if (blurEnabled) {
+    // 外层滚动状态提升到此处：滚动进行时冻结渐进模糊（停止 backdrop 捕获与采样，顶部栏降级纯色），
+    // 消除滚动期间的整屏二次渲染，滚动停止后恢复模糊
+    val outerScrollState = rememberScrollState()
+    val effectiveBlur = blurEnabled && !outerScrollState.isScrollInProgress
+    val pageBackdrop = if (effectiveBlur) {
         rememberLayerBackdrop {
             drawRect(surfaceColor)
             drawContent()
         }
     } else null
     var topBarHeightPx by remember { mutableIntStateOf(0) }
-    // 两个日志文本框各自的 backdrop：捕获边界只包框内滚动文字，
-    // 框顶部 / 底部的渐进模糊栏画在边界之外，避免渲染循环闪退
-    val runBackdrop = if (blurEnabled) {
-        rememberLayerBackdrop {
-            drawRect(boxBg)
-            drawContent()
-        }
-    } else null
-    val detailBackdrop = if (blurEnabled) {
-        rememberLayerBackdrop {
-            drawRect(boxBg)
-            drawContent()
-        }
-    } else null
 
     Box(Modifier.fillMaxSize()) {
       // 滚动内容捕获层（不含顶部 / 底部模糊栏）
@@ -709,7 +690,7 @@ private fun LogPage(logVersion: Int, blurEnabled: Boolean) {
         Column(
             Modifier
                 .fillMaxSize()
-                .verticalScroll(rememberScrollState())
+                .verticalScroll(outerScrollState)
                 .padding(horizontal = 20.dp)
                 .padding(top = with(LocalDensity.current) { topBarHeightPx.toDp() })
                 .padding(bottom = 100.dp)
@@ -727,7 +708,7 @@ private fun LogPage(logVersion: Int, blurEnabled: Boolean) {
             }
         }
         Spacer(Modifier.height(10.dp))
-        // 日志框：文字滚动时从框顶部 / 底部的渐进模糊中穿过（与整页顶底模糊栏同款做法）
+        // 日志框：纯背景 + 滚动文字，框顶部 / 底部不做模糊
         Box(
             Modifier
                 .fillMaxWidth()
@@ -735,43 +716,18 @@ private fun LogPage(logVersion: Int, blurEnabled: Boolean) {
                 .clip(RoundedCornerShape(18.dp))
                 .background(boxBg)
         ) {
-            // 捕获层只包框内滚动文字，模糊栏画在它上层；LazyColumn 只渲染可见日志行
-            LazyColumn(
-                state = runListState,
-                modifier = Modifier
+            Column(
+                Modifier
                     .fillMaxSize()
-                    .then(if (runBackdrop != null) Modifier.layerBackdrop(runBackdrop) else Modifier),
-                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 12.dp)
+                    .verticalScroll(scrollState)
+                    .padding(horizontal = 12.dp)
+                    .padding(vertical = 12.dp)
             ) {
-                itemsIndexed(runLines, key = { index, _ -> index }) { _, line ->
-                    Text(
-                        line.ifEmpty { " " },
-                        fontSize = 13.sp,
-                        lineHeight = 20.sp,
-                        color = onSurface
-                    )
-                }
-            }
-            TopBlurBar(
-                backdrop = runBackdrop,
-                blurEnabled = blurEnabled,
-                modifier = Modifier.align(Alignment.TopCenter)
-            ) {
-                Box(
-                    Modifier
-                        .fillMaxWidth()
-                        .height(boxBarHeight)
-                )
-            }
-            BottomBlurBar(
-                backdrop = runBackdrop,
-                blurEnabled = blurEnabled,
-                modifier = Modifier.align(Alignment.BottomCenter)
-            ) {
-                Box(
-                    Modifier
-                        .fillMaxWidth()
-                        .height(boxBarHeight)
+                Text(
+                    logText,
+                    fontSize = 13.sp,
+                    lineHeight = 20.sp,
+                    color = onSurface
                 )
             }
         }
@@ -791,7 +747,7 @@ private fun LogPage(logVersion: Int, blurEnabled: Boolean) {
             }
         }
         Spacer(Modifier.height(10.dp))
-        // 全局详细日志框：同样在框顶部 / 底部加渐进模糊
+        // 全局详细日志框：纯背景 + 滚动文字，框顶部 / 底部不做模糊
         Box(
             Modifier
                 .fillMaxWidth()
@@ -799,43 +755,19 @@ private fun LogPage(logVersion: Int, blurEnabled: Boolean) {
                 .clip(RoundedCornerShape(18.dp))
                 .background(boxBg)
         ) {
-            LazyColumn(
-                state = detailListState,
-                modifier = Modifier
+            Column(
+                Modifier
                     .fillMaxSize()
-                    .then(if (detailBackdrop != null) Modifier.layerBackdrop(detailBackdrop) else Modifier),
-                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 12.dp)
+                    .verticalScroll(detailScrollState)
+                    .padding(horizontal = 12.dp)
+                    .padding(vertical = 12.dp)
             ) {
-                itemsIndexed(detailLines, key = { index, _ -> index }) { _, line ->
-                    Text(
-                        line.ifEmpty { " " },
-                        fontSize = 12.sp,
-                        lineHeight = 17.sp,
-                        fontFamily = FontFamily.Monospace,
-                        color = onSurface
-                    )
-                }
-            }
-            TopBlurBar(
-                backdrop = detailBackdrop,
-                blurEnabled = blurEnabled,
-                modifier = Modifier.align(Alignment.TopCenter)
-            ) {
-                Box(
-                    Modifier
-                        .fillMaxWidth()
-                        .height(boxBarHeight)
-                )
-            }
-            BottomBlurBar(
-                backdrop = detailBackdrop,
-                blurEnabled = blurEnabled,
-                modifier = Modifier.align(Alignment.BottomCenter)
-            ) {
-                Box(
-                    Modifier
-                        .fillMaxWidth()
-                        .height(boxBarHeight)
+                Text(
+                    detailLogText,
+                    fontSize = 12.sp,
+                    lineHeight = 17.sp,
+                    fontFamily = FontFamily.Monospace,
+                    color = onSurface
                 )
             }
         }
@@ -843,29 +775,15 @@ private fun LogPage(logVersion: Int, blurEnabled: Boolean) {
         }
       }
 
-      // 顶部渐进模糊栏：标题不设文本，仅模糊效果
+      // 顶部渐进模糊栏：标题不设文本，仅模糊效果；滚动进行时降级为纯色栏
       TopBlurBar(
           backdrop = pageBackdrop,
-          blurEnabled = blurEnabled,
+          blurEnabled = effectiveBlur,
           modifier = Modifier
               .align(Alignment.TopCenter)
               .onSizeChanged { topBarHeightPx = it.height }
       ) {
           Box(Modifier.statusBarsPadding().height(10.dp))
-      }
-
-      // 固定在底部 Dock 下方的渐进模糊栏（顶部栏镜像）
-      BottomBlurBar(
-          backdrop = pageBackdrop,
-          blurEnabled = blurEnabled,
-          modifier = Modifier.align(Alignment.BottomCenter),
-      ) {
-          Box(
-              Modifier
-                  .fillMaxWidth()
-                  .navigationBarsPadding()
-                  .height(88.dp)
-          )
       }
     }
 }
@@ -993,7 +911,11 @@ private fun SettingsPage(
     // 本页自有的嵌套 backdrop（HyperIsland CollapsingPage 同款）：
     // 捕获边界只包住滚动内容，顶部模糊栏在边界之外，
     // 避免模糊节点采样到含自身的 Pager 级 backdrop、形成渲染循环而闪退
-    val pageBackdrop = if (blurEnabled) {
+    // 滚动状态提升到此处：滚动进行时冻结渐进模糊（停止 backdrop 捕获与采样，顶部栏降级纯色），
+    // 消除滚动期间的整屏二次渲染，滚动停止后恢复模糊
+    val outerScrollState = rememberScrollState()
+    val effectiveBlur = blurEnabled && !outerScrollState.isScrollInProgress
+    val pageBackdrop = if (effectiveBlur) {
         rememberLayerBackdrop {
             drawRect(surfaceColor)
             drawContent()
@@ -1003,7 +925,6 @@ private fun SettingsPage(
     var topBarHeightPx by remember { mutableIntStateOf(0) }
     // 拖动滑块/开关时：同时锁定外层 Pager 左右翻页与本页上下滚动
     var pageControlDragging by remember { mutableStateOf(false) }
-    val settingsListState = rememberLazyListState()
     val handleControlDrag: (Boolean) -> Unit = { dragging ->
         pageControlDragging = dragging
         onControlDrag(dragging)
@@ -1015,22 +936,17 @@ private fun SettingsPage(
             .fillMaxSize()
             .then(if (pageBackdrop != null) Modifier.layerBackdrop(pageBackdrop) else Modifier)
       ) {
-        // 懒加载：只组合/绘制可见卡片，上下滑动只重绘可视内容，backdrop 捕获也只处理可见项
-        LazyColumn(
-          state = settingsListState,
-          modifier = Modifier.fillMaxSize(),
-          // 拖动滑块/开关时锁定本页上下滚动
-          userScrollEnabled = !pageControlDragging,
-          // 内容延伸到顶部模糊栏下方，滚动时从模糊中穿过（HyperIsland 同款）
-          contentPadding = PaddingValues(
-              start = 20.dp,
-              end = 20.dp,
-              top = with(LocalDensity.current) { topBarHeightPx.toDp() },
-              bottom = 100.dp
-          )
+        Column(
+          Modifier
+              .fillMaxSize()
+              // 拖动滑块/开关时锁定本页上下滚动
+              .verticalScroll(outerScrollState, enabled = !pageControlDragging)
+              // 内容延伸到顶部模糊栏下方，滚动时从模糊中穿过（HyperIsland 同款）
+              .padding(horizontal = 20.dp)
+              .padding(top = with(LocalDensity.current) { topBarHeightPx.toDp() })
+              .padding(bottom = 100.dp)
         ) {
         // 权限卡片（miuix 卡片，SukiSU 同款）
-        item {
         Card(Modifier.fillMaxWidth()) {
             PermRow("定位权限", "识别校园网 WiFi 必需", locGranted) {
                 locLauncher.launch(Manifest.permission.ACCESS_FINE_LOCATION)
@@ -1062,10 +978,9 @@ private fun SettingsPage(
                 openAutoStartSettings(context)
             }
         }
-        }
+        Spacer(Modifier.height(16.dp))
         // 检测速度卡片
-        item {
-        Card(Modifier.fillMaxWidth().padding(top = 16.dp)) {
+        Card(Modifier.fillMaxWidth()) {
             Column(Modifier.padding(16.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text("检测速度", fontSize = 15.sp, color = onSurface, modifier = Modifier.weight(1f))
@@ -1211,10 +1126,9 @@ private fun SettingsPage(
                 }
             }
         }
-        }
+        Spacer(Modifier.height(16.dp))
         // 开关卡片：自动认证 / 通知检测模式 / 增强模式，合到同一个框
-        item {
-        Card(Modifier.fillMaxWidth().padding(top = 16.dp)) {
+        Card(Modifier.fillMaxWidth()) {
             // —— 自动认证 ——
             Row(
                 Modifier
@@ -1360,10 +1274,9 @@ private fun SettingsPage(
                 )
             }
         }
-        }
+        Spacer(Modifier.height(24.dp))
         // 主题与配色入口（独立页面：主题模式 + 每类元素的调色板）
-        item {
-        Card(Modifier.fillMaxWidth().padding(top = 24.dp)) {
+        Card(Modifier.fillMaxWidth()) {
             Row(
                 Modifier
                     .fillMaxWidth()
@@ -1382,10 +1295,9 @@ private fun SettingsPage(
                 Text("›", fontSize = 20.sp, color = secondary)
             }
         }
-        }
+        Spacer(Modifier.height(12.dp))
         // 高级设置入口
-        item {
-        Card(Modifier.fillMaxWidth().padding(top = 12.dp)) {
+        Card(Modifier.fillMaxWidth()) {
             Row(
                 Modifier
                     .fillMaxWidth()
@@ -1404,10 +1316,9 @@ private fun SettingsPage(
                 Text("›", fontSize = 20.sp, color = secondary)
             }
         }
-        }
+        Spacer(Modifier.height(12.dp))
         // 关于入口
-        item {
-        Card(Modifier.fillMaxWidth().padding(top = 12.dp)) {
+        Card(Modifier.fillMaxWidth()) {
             Row(
                 Modifier
                     .fillMaxWidth()
@@ -1424,14 +1335,15 @@ private fun SettingsPage(
                 Text("›", fontSize = 20.sp, color = secondary)
             }
         }
-        }
+        Spacer(Modifier.height(40.dp))
         }
       }
 
-      // 固定在顶部的渐进模糊栏 + 大标题（HyperIsland 同款），采样本页自有 backdrop
+      // 固定在顶部的渐进模糊栏 + 大标题（HyperIsland 同款），采样本页自有 backdrop；
+      // 滚动进行时降级为纯色栏
       TopBlurBar(
           backdrop = pageBackdrop,
-          blurEnabled = blurEnabled,
+          blurEnabled = effectiveBlur,
           modifier = Modifier
               .align(Alignment.TopCenter)
               .onSizeChanged { topBarHeightPx = it.height }
@@ -1447,19 +1359,6 @@ private fun SettingsPage(
           }
       }
 
-      // 固定在底部 Dock 下方的渐进模糊栏（顶部栏镜像），采样本页自有 backdrop
-      BottomBlurBar(
-          backdrop = pageBackdrop,
-          blurEnabled = blurEnabled,
-          modifier = Modifier.align(Alignment.BottomCenter),
-      ) {
-          Box(
-              Modifier
-                  .fillMaxWidth()
-                  .navigationBarsPadding()
-                  .height(88.dp)
-          )
-      }
     }
 }
 
@@ -1468,6 +1367,8 @@ private fun PermRow(label: String, desc: String, granted: Boolean, onClick: () -
     val onSurface = MiuixTheme.colorScheme.onSurface
     val secondary = MiuixTheme.colorScheme.onSurfaceContainerVariant
     val accent = MiuixTheme.colorScheme.primary
+    val surfaceColor = MiuixTheme.colorScheme.surface
+    val canvasBackdrop = rememberCanvasBackdrop { drawRect(surfaceColor) }
     val green = LocalAppColors.current.success
     Row(
         Modifier
