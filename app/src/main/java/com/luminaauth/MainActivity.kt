@@ -668,11 +668,10 @@ private fun LogPage(logVersion: Int, blurEnabled: Boolean) {
 
     // 本页自有 backdrop（与设置页同款拓扑）：捕获边界只包滚动内容，
     // 顶部 / 底部模糊栏在边界外，避免渲染循环闪退
-    // 外层滚动状态提升到此处：滚动进行时保持渐进模糊（不冻结），
+    // 外层滚动状态提升到此处：顶部渐进模糊全程保持（不冻结、不切换纯色），
     // 滚动内容实时从模糊栏下方穿过
     val outerScrollState = rememberScrollState()
-    val effectiveBlur = blurEnabled
-    val pageBackdrop = if (effectiveBlur) {
+    val pageBackdrop = if (blurEnabled) {
         rememberLayerBackdrop {
             drawRect(surfaceColor)
             drawContent()
@@ -681,7 +680,7 @@ private fun LogPage(logVersion: Int, blurEnabled: Boolean) {
     var topBarHeightPx by remember { mutableIntStateOf(0) }
 
     Box(Modifier.fillMaxSize()) {
-      // 滚动内容捕获层（不含顶部 / 底部模糊栏）
+      // 滚动内容捕获层（不含顶部模糊栏）
       Box(
         Modifier
             .fillMaxSize()
@@ -690,10 +689,14 @@ private fun LogPage(logVersion: Int, blurEnabled: Boolean) {
         Column(
             Modifier
                 .fillMaxSize()
+                // 恢复 vc131 默认边缘回弹：拖拽与快速 fling 到边缘均有自然拉伸/回弹
                 .verticalScroll(outerScrollState)
                 .padding(horizontal = 20.dp)
                 .padding(top = with(LocalDensity.current) { topBarHeightPx.toDp() })
-                .padding(bottom = 100.dp)
+                .padding(
+                    bottom = 100.dp +
+                        WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+                )
         ) {
         Spacer(Modifier.height(8.dp))
         // ============ 运行日志 ============
@@ -715,14 +718,9 @@ private fun LogPage(logVersion: Int, blurEnabled: Boolean) {
                 .height(240.dp)
                 .clip(RoundedCornerShape(18.dp))
                 .background(boxBg)
+                .padding(12.dp)
         ) {
-            Column(
-                Modifier
-                    .fillMaxSize()
-                    .verticalScroll(scrollState)
-                    .padding(horizontal = 12.dp)
-                    .padding(vertical = 12.dp)
-            ) {
+            Column(Modifier.verticalScroll(scrollState)) {
                 Text(
                     logText,
                     fontSize = 13.sp,
@@ -754,14 +752,9 @@ private fun LogPage(logVersion: Int, blurEnabled: Boolean) {
                 .height(480.dp)
                 .clip(RoundedCornerShape(18.dp))
                 .background(boxBg)
+                .padding(12.dp)
         ) {
-            Column(
-                Modifier
-                    .fillMaxSize()
-                    .verticalScroll(detailScrollState)
-                    .padding(horizontal = 12.dp)
-                    .padding(vertical = 12.dp)
-            ) {
+            Column(Modifier.verticalScroll(detailScrollState)) {
                 Text(
                     detailLogText,
                     fontSize = 12.sp,
@@ -775,10 +768,10 @@ private fun LogPage(logVersion: Int, blurEnabled: Boolean) {
         }
       }
 
-      // 顶部渐进模糊栏：标题不设文本，仅模糊效果；滚动进行时降级为纯色栏
+      // 顶部渐进模糊栏：标题不设文本，仅模糊效果，滚动全程保持渲染
       TopBlurBar(
           backdrop = pageBackdrop,
-          blurEnabled = effectiveBlur,
+          blurEnabled = blurEnabled,
           modifier = Modifier
               .align(Alignment.TopCenter)
               .onSizeChanged { topBarHeightPx = it.height }
@@ -914,8 +907,7 @@ private fun SettingsPage(
     // 滚动状态提升到此处：滚动进行时保持渐进模糊（不冻结），
     // 滚动内容实时从模糊栏下方穿过
     val outerScrollState = rememberScrollState()
-    val effectiveBlur = blurEnabled
-    val pageBackdrop = if (effectiveBlur) {
+    val pageBackdrop = if (blurEnabled) {
         rememberLayerBackdrop {
             drawRect(surfaceColor)
             drawContent()
@@ -939,6 +931,7 @@ private fun SettingsPage(
         Column(
           Modifier
               .fillMaxSize()
+              // 恢复 vc131 默认边缘回弹：拖拽与快速 fling 到边缘均有自然拉伸/回弹；
               // 拖动滑块/开关时锁定本页上下滚动
               .verticalScroll(outerScrollState, enabled = !pageControlDragging)
               // 内容延伸到顶部模糊栏下方，滚动时从模糊中穿过（HyperIsland 同款）
@@ -1339,11 +1332,11 @@ private fun SettingsPage(
         }
       }
 
-      // 固定在顶部的渐进模糊栏 + 大标题（HyperIsland 同款），采样本页自有 backdrop；
-      // 滚动进行时降级为纯色栏
+      // 固定在顶部的渐进模糊栏 + 大标题（HyperIsland 同款），
+      // 采样本页自有 backdrop，滚动全程保持渲染
       TopBlurBar(
           backdrop = pageBackdrop,
-          blurEnabled = effectiveBlur,
+          blurEnabled = blurEnabled,
           modifier = Modifier
               .align(Alignment.TopCenter)
               .onSizeChanged { topBarHeightPx = it.height }
@@ -1358,7 +1351,6 @@ private fun SettingsPage(
               Spacer(Modifier.height(16.dp))
           }
       }
-
     }
 }
 

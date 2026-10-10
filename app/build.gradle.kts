@@ -12,7 +12,7 @@ android {
         minSdk = 29
         multiDexEnabled = true
         targetSdk = 36
-        versionCode = 158
+        versionCode = 162
         versionName = "1.1.3"
     }
 
